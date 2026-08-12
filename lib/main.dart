@@ -1,16 +1,28 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:intl/intl.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+const appShareUrl = String.fromEnvironment(
+  'APP_SHARE_URL',
+  defaultValue:
+      'https://play.google.com/store/apps/details?id=com.thefintab.expense',
+);
+const premiumProductId = 'fintab_premium_monthly_29';
+const premiumSubscriptionsEnabled = false;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,6 +46,12 @@ class _FinTabAppState extends State<FinTabApp> {
     model.load().then((_) {
       if (mounted) setState(() => ready = true);
     });
+  }
+
+  @override
+  void dispose() {
+    model.dispose();
+    super.dispose();
   }
 
   @override
@@ -161,15 +179,23 @@ class DiaryEntry {
 }
 
 class ProfileData {
-  ProfileData({this.name = '', this.mobile = '', this.purpose = 'House Head', this.photoPath = ''});
+  ProfileData({
+    this.name = '',
+    this.mobile = '',
+    this.email = '',
+    this.purpose = 'House Head',
+    this.photoPath = '',
+  });
   String name;
   String mobile;
+  String email;
   String purpose;
   String photoPath;
 
   Map<String, dynamic> toJson() => {
         'name': name,
         'mobile': mobile,
+        'email': email,
         'purpose': purpose,
         'photoPath': photoPath,
       };
@@ -177,6 +203,7 @@ class ProfileData {
   factory ProfileData.fromJson(Map<String, dynamic> j) => ProfileData(
         name: j['name'] ?? '',
         mobile: j['mobile'] ?? '',
+        email: j['email'] ?? '',
         purpose: j['purpose'] ?? 'House Head',
         photoPath: j['photoPath'] ?? '',
       );
@@ -212,6 +239,7 @@ class AppModel extends ChangeNotifier {
   static const _profileKey = 'v3_profile';
   static const _diaryKey = 'v3_diary';
   static const _draftKey = 'v3_expense_draft';
+  static const _premiumKey = 'v4_premium_active';
 
   late SharedPreferences prefs;
   List<CategoryItem> categories = [];
@@ -221,6 +249,13 @@ class AppModel extends ChangeNotifier {
   ProfileData profile = ProfileData();
   Map<String, dynamic> expenseDraft = {};
   DateTime activeMonth = DateTime(DateTime.now().year, DateTime.now().month);
+  final InAppPurchase _inAppPurchase = InAppPurchase.instance;
+  StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
+  ProductDetails? premiumProduct;
+  bool premiumActive = false;
+  bool storeAvailable = false;
+  bool purchasePending = false;
+  String billingMessage = '';
 
   static List<CategoryItem> masterCategories() => [
         CategoryItem(id: 'grocery', name: 'Grocery', icon: '🛒'),
@@ -300,7 +335,95 @@ class AppModel extends ChangeNotifier {
     }
     final draftText = prefs.getString(_draftKey);
     if (draftText != null) expenseDraft = Map<String, dynamic>.from(jsonDecode(draftText));
+    premiumActive = prefs.getBool(_premiumKey) ?? false;
     notifyListeners();
+    if (premiumSubscriptionsEnabled) await _initBilling();
+  }
+
+  Future<void> _initBilling() async {
+    _purchaseSubscription ??= _inAppPurchase.purchaseStream.listen(
+      _handlePurchaseUpdates,
+      onError: (Object error) {
+        purchasePending = false;
+        billingMessage = 'Google Play billing is temporarily unavailable.';
+        notifyListeners();
+      },
+    );
+    storeAvailable = await _inAppPurchase.isAvailable();
+    if (!storeAvailable) {
+      billingMessage = 'Install the Play Store version to activate Premium.';
+      notifyListeners();
+      return;
+    }
+    final response = await _inAppPurchase.queryProductDetails(
+      const <String>{premiumProductId},
+    );
+    if (response.productDetails.isNotEmpty) {
+      premiumProduct = response.productDetails.first;
+      billingMessage = '';
+    } else {
+      billingMessage = '₹29 monthly product is not active in Play Console yet.';
+    }
+    notifyListeners();
+  }
+
+  Future<void> buyPremium() async {
+    final product = premiumProduct;
+    if (!storeAvailable || product == null || purchasePending) return;
+    purchasePending = true;
+    billingMessage = 'Opening Google Play…';
+    notifyListeners();
+    final param = PurchaseParam(productDetails: product);
+    await _inAppPurchase.buyNonConsumable(purchaseParam: param);
+  }
+
+  Future<void> restorePremium() async {
+    if (!storeAvailable) return;
+    purchasePending = true;
+    billingMessage = 'Restoring subscription…';
+    notifyListeners();
+    await _inAppPurchase.restorePurchases();
+  }
+
+  Future<void> _handlePurchaseUpdates(
+    List<PurchaseDetails> purchases,
+  ) async {
+    for (final purchase in purchases) {
+      if (purchase.productID != premiumProductId) continue;
+      if (purchase.status == PurchaseStatus.pending) {
+        purchasePending = true;
+        billingMessage = 'Payment is pending in Google Play.';
+      } else if (purchase.status == PurchaseStatus.error) {
+        purchasePending = false;
+        billingMessage = purchase.error?.message ?? 'Subscription failed.';
+      } else if (purchase.status == PurchaseStatus.canceled) {
+        purchasePending = false;
+        billingMessage = 'Subscription was cancelled.';
+      } else if (purchase.status == PurchaseStatus.purchased ||
+          purchase.status == PurchaseStatus.restored) {
+        final hasStoreProof =
+            purchase.verificationData.serverVerificationData.isNotEmpty;
+        if (hasStoreProof) {
+          premiumActive = true;
+          purchasePending = false;
+          billingMessage = 'FinTab Premium is active.';
+          await prefs.setBool(_premiumKey, true);
+        } else {
+          purchasePending = false;
+          billingMessage = 'Purchase verification failed.';
+        }
+      }
+      if (purchase.pendingCompletePurchase) {
+        await _inAppPurchase.completePurchase(purchase);
+      }
+    }
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _purchaseSubscription?.cancel();
+    super.dispose();
   }
 
   String monthKey([DateTime? month]) {
@@ -317,7 +440,12 @@ class AppModel extends ChangeNotifier {
       .where((e) => _sameMonth(e.date, activeMonth))
       .fold(0.0, (sum, e) => sum + e.amount);
 
-  double get totalRemaining => currentPlan.budget - totalSpent;
+  double get totalCarryForward => _totalBalanceBefore(activeMonth);
+
+  double get totalAvailableBudget =>
+      currentPlan.budget + totalCarryForward;
+
+  double get totalRemaining => totalAvailableBudget - totalSpent;
 
   double get allocatedTotal =>
       currentPlan.allocations.values.fold(0.0, (a, b) => a + b);
@@ -329,6 +457,12 @@ class AppModel extends ChangeNotifier {
 
   double allocationFor(String categoryId) =>
       currentPlan.allocations[categoryId] ?? 0;
+
+  double carryForwardFor(String categoryId) =>
+      _categoryBalanceBefore(activeMonth, categoryId);
+
+  double availableFor(String categoryId) =>
+      allocationFor(categoryId) + carryForwardFor(categoryId);
 
   List<ExpenseEntry> get monthExpenses {
     final list =
@@ -381,6 +515,16 @@ class AppModel extends ChangeNotifier {
       selected: true,
       custom: true,
     ));
+    await _saveCategories();
+    notifyListeners();
+  }
+
+  Future<void> updateCategoryName(String id, String name) async {
+    final clean = name.trim();
+    if (clean.isEmpty) return;
+    final category = categoryById(id);
+    if (category == null) return;
+    category.name = clean;
     await _saveCategories();
     notifyListeners();
   }
@@ -476,11 +620,11 @@ class AppModel extends ChangeNotifier {
   }
 
   bool get isAboveAveragePace {
-    if (currentPlan.budget <= 0) return false;
+    if (totalAvailableBudget <= 0) return false;
     final totalDays = DateTime(activeMonth.year, activeMonth.month + 1, 0).day;
     final now = DateTime.now();
     final elapsed = now.year == activeMonth.year && now.month == activeMonth.month ? now.day : totalDays;
-    final expectedByNow = currentPlan.budget * elapsed / totalDays;
+    final expectedByNow = totalAvailableBudget * elapsed / totalDays;
     return totalSpent > expectedByNow;
   }
 
@@ -526,6 +670,63 @@ class AppModel extends ChangeNotifier {
     activeMonth = DateTime(activeMonth.year, activeMonth.month + 1);
     notifyListeners();
   }
+
+  double _totalBalanceBefore(DateTime targetMonth) {
+    final start = _earliestTrackedMonth();
+    if (start == null || !_monthBefore(start, targetMonth)) return 0;
+
+    var cursor = start;
+    var balance = 0.0;
+    while (_monthBefore(cursor, targetMonth)) {
+      final plan = plans[monthKey(cursor)];
+      final spent = expenses
+          .where((e) => _sameMonth(e.date, cursor))
+          .fold(0.0, (sum, e) => sum + e.amount);
+      balance += (plan?.budget ?? 0) - spent;
+      cursor = DateTime(cursor.year, cursor.month + 1);
+    }
+    return balance;
+  }
+
+  double _categoryBalanceBefore(DateTime targetMonth, String categoryId) {
+    final start = _earliestTrackedMonth();
+    if (start == null || !_monthBefore(start, targetMonth)) return 0;
+
+    var cursor = start;
+    var balance = 0.0;
+    while (_monthBefore(cursor, targetMonth)) {
+      final allocation =
+          plans[monthKey(cursor)]?.allocations[categoryId] ?? 0;
+      final spent = expenses
+          .where((e) =>
+              e.categoryId == categoryId && _sameMonth(e.date, cursor))
+          .fold(0.0, (sum, e) => sum + e.amount);
+      balance += allocation - spent;
+      cursor = DateTime(cursor.year, cursor.month + 1);
+    }
+    return balance;
+  }
+
+  DateTime? _earliestTrackedMonth() {
+    DateTime? earliest;
+    for (final key in plans.keys) {
+      final parts = key.split('-');
+      if (parts.length != 2) continue;
+      final year = int.tryParse(parts[0]);
+      final month = int.tryParse(parts[1]);
+      if (year == null || month == null || month < 1 || month > 12) continue;
+      final value = DateTime(year, month);
+      if (earliest == null || _monthBefore(value, earliest)) earliest = value;
+    }
+    for (final expense in expenses) {
+      final value = DateTime(expense.date.year, expense.date.month);
+      if (earliest == null || _monthBefore(value, earliest)) earliest = value;
+    }
+    return earliest;
+  }
+
+  static bool _monthBefore(DateTime a, DateTime b) =>
+      a.year < b.year || (a.year == b.year && a.month < b.month);
 
   Future<void> _saveCategories() async {
     await prefs.setString(
@@ -718,13 +919,24 @@ class DashboardScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        money.format(model.currentPlan.budget),
+                        money.format(model.totalAvailableBudget),
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 34,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
+                      if (model.totalCarryForward != 0) ...[
+                        const SizedBox(height: 5),
+                        Text(
+                          'This month ${money.format(model.currentPlan.budget)}  •  Carry forward ${model.totalCarryForward >= 0 ? '+' : ''}${money.format(model.totalCarryForward)}',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 18),
                       Row(
                         children: [
@@ -770,6 +982,16 @@ class DashboardScreen extends StatelessWidget {
                       ),
                     ],
                   ),
+                ),
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
+                child: FilledButton.icon(
+                  onPressed: () => startScanAndPay(context, model),
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('Scan & Pay with Google Pay / UPI'),
                 ),
               ),
             ),
@@ -820,11 +1042,13 @@ class DashboardScreen extends StatelessWidget {
                 itemBuilder: (context, i) {
                   final c = model.selectedCategories[i];
                   final allocated = model.allocationFor(c.id);
+                  final carry = model.carryForwardFor(c.id);
+                  final available = model.availableFor(c.id);
                   final spent = model.spentFor(c.id);
-                  final remaining = allocated - spent;
-                  final progress = allocated <= 0
+                  final remaining = available - spent;
+                  final progress = available <= 0
                       ? 0.0
-                      : (spent / allocated).clamp(0.0, 1.0);
+                      : (spent / available).clamp(0.0, 1.0);
                   return Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
                     child: Card(
@@ -850,8 +1074,17 @@ class DashboardScreen extends StatelessWidget {
                                     fontWeight: FontWeight.w900,
                                     color: remaining < 0
                                         ? Colors.red.shade700
-                                        : const Color(0xFF0C7C66),
+                                    : const Color(0xFF0C7C66),
                                   ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Edit allocation',
+                                  onPressed: () => showAllocationDialog(
+                                    context,
+                                    model,
+                                    c,
+                                  ),
+                                  icon: const Icon(Icons.edit_outlined),
                                 ),
                               ],
                             ),
@@ -866,7 +1099,9 @@ class DashboardScreen extends StatelessWidget {
                               children: [
                                 Expanded(
                                   child: Text(
-                                    'Allocated ${money.format(allocated)}',
+                                    carry == 0
+                                        ? 'Allocated ${money.format(allocated)}'
+                                        : 'New ${money.format(allocated)} • Carry ${carry >= 0 ? '+' : ''}${money.format(carry)}',
                                     style: const TextStyle(
                                       fontSize: 12,
                                       color: Colors.black54,
@@ -1094,6 +1329,7 @@ class _AllocationScreenState extends State<AllocationScreen> {
   }
 
   Future<void> saveAndClose() async {
+    FocusScope.of(context).unfocus();
     final values = <String, double>{};
     for (final c in model.selectedCategories) {
       values[c.id] = parseMoney(controllers[c.id]?.text ?? '');
@@ -1242,9 +1478,25 @@ class CategoriesScreen extends StatelessWidget {
                     }
                   },
                   secondary: Text(c.icon, style: const TextStyle(fontSize: 24)),
-                  title: Text(
-                    c.name,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          c.name,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Edit category name',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => showEditCategoryDialog(
+                          context,
+                          model,
+                          c,
+                        ),
+                        icon: const Icon(Icons.edit_outlined, size: 20),
+                      ),
+                    ],
                   ),
                   subtitle: c.custom ? const Text('Custom category') : null,
                 ),
@@ -1303,8 +1555,8 @@ class StatementScreen extends StatelessWidget {
                     children: [
                       Expanded(
                         child: _MiniMetric(
-                          'Budget',
-                          money.format(model.currentPlan.budget),
+                          'Available',
+                          money.format(model.totalAvailableBudget),
                         ),
                       ),
                       Expanded(
@@ -1415,15 +1667,16 @@ class ExpenseTile extends StatelessWidget {
                   fontWeight: FontWeight.w900,
                 ),
               ),
-              PopupMenuButton<String>(
-                onSelected: (v) {
-                  if (v == 'edit') onEdit();
-                  if (v == 'delete') onDelete();
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'edit', child: Text('Edit')),
-                  PopupMenuItem(value: 'delete', child: Text('Delete')),
-                ],
+              IconButton(
+                tooltip: 'Edit expense',
+                onPressed: onEdit,
+                icon: const Icon(Icons.edit_outlined),
+              ),
+              IconButton(
+                tooltip: 'Delete expense',
+                onPressed: onDelete,
+                color: Colors.red.shade700,
+                icon: const Icon(Icons.delete_outline),
               ),
             ],
           ),
@@ -1483,7 +1736,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
   @override
   void dispose() {
-    controller.dispose();
+    unawaited(controller.dispose());
     super.dispose();
   }
 
@@ -1555,12 +1808,45 @@ class MoreScreen extends StatelessWidget {
             child: ListTile(
               leading: ProfileAvatar(model: model, size: 52),
               title: Text(model.profile.name.isEmpty ? 'Add your profile' : model.profile.name),
-              subtitle: Text('${model.profile.purpose}${model.profile.mobile.isEmpty ? '' : ' • ${model.profile.mobile}'}'),
+              subtitle: Text(
+                '${model.profile.purpose}'
+                '${model.profile.mobile.isEmpty ? '' : ' • ${model.profile.mobile}'}'
+                '${model.profile.email.isEmpty ? '' : '\n${model.profile.email}'}',
+              ),
               trailing: const Icon(Icons.edit_outlined),
               onTap: () => showProfileDialog(context, model),
             ),
           ),
           const SizedBox(height: 10),
+          if (premiumSubscriptionsEnabled) ...[
+            Card(
+              color: model.premiumActive
+                  ? const Color(0xFFFFF6DA)
+                  : Colors.white,
+              child: ListTile(
+                leading: Icon(
+                  Icons.workspace_premium,
+                  color: model.premiumActive
+                      ? const Color(0xFF9A6700)
+                      : const Color(0xFF0C7C66),
+                ),
+                title: Text(
+                  model.premiumActive
+                      ? 'FinTab Premium Active'
+                      : 'FinTab Premium — ₹29/month',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                subtitle: Text(
+                  model.premiumActive
+                      ? 'Monthly subscription managed by Google Play'
+                      : 'Auto-renewing plan • Cancel anytime in Google Play',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => showPremiumDialog(context, model),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           Card(
             child: Column(
               children: [
@@ -1579,6 +1865,17 @@ class MoreScreen extends StatelessWidget {
                 ),
                 const Divider(height: 1),
                 ListTile(
+                  leading: const Icon(Icons.email_outlined),
+                  title: const Text('Email Backup'),
+                  subtitle: Text(
+                    model.profile.email.isEmpty
+                        ? 'Add an email, then send your backup through Gmail'
+                        : 'Send backup to ${model.profile.email}',
+                  ),
+                  onTap: () => emailBackup(context, model),
+                ),
+                const Divider(height: 1),
+                ListTile(
                   leading: const Icon(Icons.restore),
                   title: const Text('Restore Backup'),
                   subtitle: const Text('Bring entries back from a FinTab backup file'),
@@ -1594,14 +1891,17 @@ class MoreScreen extends StatelessWidget {
               title: const Text('Share FinTab Expense'),
               subtitle: const Text('Tell family and friends about the app'),
               onTap: () => SharePlus.instance.share(
-                ShareParams(text: 'Try FinTab Expense — plan your monthly budget, track expenses and save more.'),
+                ShareParams(
+                  text:
+                      'Download FinTab Expense — plan your monthly budget, track expenses and save more.\n$appShareUrl',
+                ),
               ),
             ),
           ),
           const Padding(
             padding: EdgeInsets.all(18),
             child: Text(
-              'FinTab Expense V3 • Offline-first. Your entries remain on this phone until you delete the app data. Keep a regular backup file.',
+              'FinTab Expense V3.4 • Free offline expense manager with UPI Scan & Pay. Premium is prepared for the future and currently switched off.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.black54),
             ),
@@ -1612,9 +1912,354 @@ class MoreScreen extends StatelessWidget {
   }
 }
 
+Future<void> startScanAndPay(
+  BuildContext context,
+  AppModel model,
+) async {
+  if (model.selectedCategories.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('First select an expense category.')),
+    );
+    return;
+  }
+  final rawUpi = await Navigator.push<String>(
+    context,
+    MaterialPageRoute(builder: (_) => const ScanUpiQrScreen()),
+  );
+  if (rawUpi == null || !context.mounted) return;
+  await showUpiPaymentSheet(context, model, rawUpi);
+}
+
+class ScanUpiQrScreen extends StatefulWidget {
+  const ScanUpiQrScreen({super.key});
+
+  @override
+  State<ScanUpiQrScreen> createState() => _ScanUpiQrScreenState();
+}
+
+class _ScanUpiQrScreenState extends State<ScanUpiQrScreen> {
+  final MobileScannerController controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode],
+  );
+  bool handled = false;
+
+  Future<void> handleCapture(BarcodeCapture capture) async {
+    if (handled || capture.barcodes.isEmpty) return;
+    final raw = capture.barcodes.first.rawValue?.trim();
+    if (raw == null || raw.isEmpty) return;
+    final uri = Uri.tryParse(raw);
+    if (uri == null ||
+        uri.scheme.toLowerCase() != 'upi' ||
+        uri.host.toLowerCase() != 'pay') {
+      handled = true;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This is not a valid UPI payment QR.')),
+        );
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+      handled = false;
+      return;
+    }
+    handled = true;
+    await controller.stop();
+    if (mounted) Navigator.pop(context, raw);
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Scan Merchant UPI QR'),
+        actions: [
+          IconButton(
+            tooltip: 'Torch',
+            onPressed: controller.toggleTorch,
+            icon: const Icon(Icons.flash_on),
+          ),
+        ],
+      ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          MobileScanner(
+            controller: controller,
+            onDetect: handleCapture,
+          ),
+          Center(
+            child: Container(
+              width: 250,
+              height: 250,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white, width: 3),
+                borderRadius: BorderRadius.circular(24),
+              ),
+            ),
+          ),
+          const Positioned(
+            left: 24,
+            right: 24,
+            bottom: 36,
+            child: Card(
+              color: Colors.black87,
+              child: Padding(
+                padding: EdgeInsets.all(14),
+                child: Text(
+                  'Scan only a trusted merchant UPI QR. Your UPI PIN is entered only inside Google Pay or your chosen UPI app.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> showUpiPaymentSheet(
+  BuildContext context,
+  AppModel model,
+  String rawUpi,
+) async {
+  final scanned = Uri.parse(rawUpi);
+  final params = Map<String, String>.from(scanned.queryParameters);
+  final payeeAddress = params['pa']?.trim() ?? '';
+  if (payeeAddress.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Merchant UPI ID is missing in this QR.')),
+    );
+    return;
+  }
+
+  final amount = TextEditingController(text: params['am'] ?? '');
+  final title = TextEditingController(
+    text: (params['pn']?.trim().isNotEmpty ?? false)
+        ? params['pn']!.trim()
+        : 'UPI Payment',
+  );
+  var categoryId = model.selectedCategories.first.id;
+
+  final request = await showModalBottomSheet<Map<String, dynamic>>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => Padding(
+        padding: EdgeInsets.fromLTRB(
+          18,
+          18,
+          18,
+          MediaQuery.of(ctx).viewInsets.bottom + 18,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Confirm UPI Payment',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 6),
+              Text('Merchant UPI: $payeeAddress'),
+              const SizedBox(height: 16),
+              TextField(
+                controller: title,
+                decoration: const InputDecoration(labelText: 'Merchant / Expense name'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: amount,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Amount', prefixText: '₹ '),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: categoryId,
+                decoration: const InputDecoration(labelText: 'Expense category'),
+                items: model.selectedCategories
+                    .map((c) => DropdownMenuItem(
+                          value: c.id,
+                          child: Text('${c.icon}  ${c.name}'),
+                        ))
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) setLocal(() => categoryId = value);
+                },
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () {
+                    final value = parseMoney(amount.text);
+                    if (title.text.trim().isEmpty || value <= 0) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(content: Text('Enter merchant name and valid amount.')),
+                      );
+                      return;
+                    }
+                    Navigator.pop(ctx, <String, dynamic>{
+                      'title': title.text.trim(),
+                      'amount': value,
+                      'categoryId': categoryId,
+                    });
+                  },
+                  icon: const Icon(Icons.account_balance_wallet),
+                  label: const Text('Open Google Pay / UPI App'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'FinTab does not hold money or ask for your UPI PIN.',
+                style: TextStyle(color: Colors.black54, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  amount.dispose();
+  title.dispose();
+  if (request == null || !context.mounted) return;
+
+  params['pa'] = payeeAddress;
+  params['pn'] = request['title'] as String;
+  params['am'] = (request['amount'] as double).toStringAsFixed(2);
+  params['cu'] = 'INR';
+  params.putIfAbsent(
+    'tn',
+    () => 'FinTab Expense payment',
+  );
+  final query = params.entries
+      .map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+      .join('&');
+  final paymentUri = Uri.parse('upi://pay?$query');
+
+  final launched = await launchUrl(
+    paymentUri,
+    mode: LaunchMode.externalApplication,
+  );
+  if (!launched) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No UPI app found. Install or open Google Pay.')),
+      );
+    }
+    return;
+  }
+  if (!context.mounted) return;
+  final paid = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Was payment successful?'),
+      content: Text(
+        'Confirm only after Google Pay shows payment successful for ₹${(request['amount'] as double).toStringAsFixed(2)}.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('No / Failed'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Yes, Add Expense'),
+        ),
+      ],
+    ),
+  );
+  if (paid == true) {
+    await model.addExpense(
+      title: request['title'] as String,
+      amount: request['amount'] as double,
+      categoryId: request['categoryId'] as String,
+      date: DateTime.now(),
+      note: 'Paid via UPI QR • $payeeAddress',
+    );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Payment added to expenses.')),
+      );
+    }
+  }
+}
+
+Future<void> showPremiumDialog(
+  BuildContext context,
+  AppModel model,
+) async {
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AnimatedBuilder(
+      animation: model,
+      builder: (ctx, _) {
+        final price = model.premiumProduct?.price ?? '₹29';
+        return AlertDialog(
+          title: const Text('FinTab Premium'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                model.premiumActive
+                    ? 'Premium is active on this Google Play account.'
+                    : '$price per month • Auto-renewing • Cancel anytime',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 12),
+              const Text('• Advanced statements and financial-year insights'),
+              const Text('• Email backup and upcoming secure cloud sync'),
+              const Text('• Premium Scan & Pay improvements and support'),
+              if (model.billingMessage.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  model.billingMessage,
+                  style: const TextStyle(color: Colors.black54),
+                ),
+              ],
+              if (model.purchasePending) ...[
+                const SizedBox(height: 12),
+                const Center(child: CircularProgressIndicator()),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => model.restorePremium(),
+              child: const Text('Restore Purchase'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+            if (!model.premiumActive)
+              FilledButton(
+                onPressed: model.premiumProduct == null || model.purchasePending
+                    ? null
+                    : () => model.buyPremium(),
+                child: const Text('Subscribe ₹29/month'),
+              ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
 Future<void> showProfileDialog(BuildContext context, AppModel model) async {
   final name = TextEditingController(text: model.profile.name);
   final mobile = TextEditingController(text: model.profile.mobile);
+  final email = TextEditingController(text: model.profile.email);
   String purpose = model.profile.purpose;
   String photoPath = model.profile.photoPath;
   await showDialog(
@@ -1651,6 +2296,16 @@ Future<void> showProfileDialog(BuildContext context, AppModel model) async {
                 decoration: const InputDecoration(labelText: 'Mobile number'),
               ),
               const SizedBox(height: 10),
+              TextField(
+                controller: email,
+                keyboardType: TextInputType.emailAddress,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Backup email',
+                  hintText: 'name@example.com',
+                ),
+              ),
+              const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 initialValue: purpose,
                 decoration: const InputDecoration(labelText: 'App purpose'),
@@ -1669,6 +2324,7 @@ Future<void> showProfileDialog(BuildContext context, AppModel model) async {
               await model.saveProfile(ProfileData(
                 name: name.text.trim(),
                 mobile: mobile.text.trim(),
+                email: email.text.trim(),
                 purpose: purpose,
                 photoPath: photoPath,
               ));
@@ -1682,12 +2338,40 @@ Future<void> showProfileDialog(BuildContext context, AppModel model) async {
   );
 }
 
-Future<void> exportBackup(BuildContext context, AppModel model) async {
+Future<void> emailBackup(BuildContext context, AppModel model) async {
+  if (model.profile.email.trim().isEmpty) {
+    await showProfileDialog(context, model);
+    if (model.profile.email.trim().isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Add your backup email first.')),
+        );
+      }
+      return;
+    }
+  }
+  await exportBackup(
+    context,
+    model,
+    targetEmail: model.profile.email.trim(),
+  );
+}
+
+Future<void> exportBackup(
+  BuildContext context,
+  AppModel model, {
+  String? targetEmail,
+}) async {
   try {
     final name = 'FinTab_Backup_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.json';
     final file = File('${Directory.systemTemp.path}/$name');
     await file.writeAsString(const JsonEncoder.withIndent('  ').convert(model.backupJson()));
-    await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'FinTab Expense offline backup'));
+    final message = targetEmail == null
+        ? 'FinTab Expense offline backup'
+        : 'FinTab Expense backup for $targetEmail. Select Gmail and send this attached file to $targetEmail.';
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(file.path)], text: message),
+    );
   } catch (_) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup could not be created.')));
   }
@@ -1811,6 +2495,51 @@ Future<void> showAddCategoryDialog(
       ],
     ),
   );
+}
+
+Future<void> showEditCategoryDialog(
+  BuildContext context,
+  AppModel model,
+  CategoryItem category,
+) async {
+  final controller = TextEditingController(text: category.name);
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Edit Category'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.words,
+        decoration: const InputDecoration(labelText: 'Category name'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () async {
+            if (controller.text.trim().isEmpty) {
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                const SnackBar(content: Text('Enter a category name.')),
+              );
+              return;
+            }
+            await model.updateCategoryName(category.id, controller.text);
+            if (ctx.mounted) Navigator.pop(ctx, true);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (saved == true && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Category saved successfully.')),
+    );
+  }
 }
 
 Future<void> showAddExpenseSheet(
@@ -1997,6 +2726,52 @@ Future<void> showAddExpenseSheet(
   );
 }
 
+Future<void> showAllocationDialog(
+  BuildContext context,
+  AppModel model,
+  CategoryItem category,
+) async {
+  final controller = TextEditingController(
+    text: model.allocationFor(category.id) == 0
+        ? ''
+        : model.allocationFor(category.id).toStringAsFixed(0),
+  );
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Edit ${category.name} allocation'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: const InputDecoration(
+          labelText: 'This month allocation',
+          prefixText: '₹ ',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  if (saved == true) {
+    await model.setAllocation(category.id, parseMoney(controller.text));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Category allocation saved.')),
+      );
+    }
+  }
+  controller.dispose();
+}
+
 double parseMoney(String text) {
   return double.tryParse(text.replaceAll(',', '').trim()) ?? 0;
 }
@@ -2068,7 +2843,7 @@ Future<void> exportPdf(BuildContext context, AppModel model) async {
           child: pw.Row(
             mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
             children: [
-              _pdfMetric('Budget', model.currentPlan.budget),
+              _pdfMetric('Available Budget', model.totalAvailableBudget),
               _pdfMetric('Spent', model.totalSpent),
               _pdfMetric('Remaining', model.totalRemaining),
             ],
@@ -2081,15 +2856,26 @@ Future<void> exportPdf(BuildContext context, AppModel model) async {
         ),
         pw.SizedBox(height: 8),
         pw.TableHelper.fromTextArray(
-          headers: const ['Category', 'Allocated', 'Spent', 'Remaining'],
+          headers: const [
+            'Category',
+            'New Budget',
+            'Carry',
+            'Available',
+            'Spent',
+            'Remaining',
+          ],
           data: model.selectedCategories.map((c) {
             final allocated = model.allocationFor(c.id);
+            final carry = model.carryForwardFor(c.id);
+            final available = model.availableFor(c.id);
             final spent = model.spentFor(c.id);
             return [
               c.name,
               'Rs. ${allocated.toStringAsFixed(0)}',
+              'Rs. ${carry.toStringAsFixed(0)}',
+              'Rs. ${available.toStringAsFixed(0)}',
               'Rs. ${spent.toStringAsFixed(0)}',
-              'Rs. ${(allocated - spent).toStringAsFixed(0)}',
+              'Rs. ${(available - spent).toStringAsFixed(0)}',
             ];
           }).toList(),
           headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
