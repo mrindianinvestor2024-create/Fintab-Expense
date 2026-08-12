@@ -1,22 +1,25 @@
 name: fintab_expense
-description: FinTab Expense - simple personal expense tracker.
+description: FinTab Expense - offline category-wise budget and expense manager.
 publish_to: "none"
-version: 1.0.0+1
+
+version: 2.0.0+2
 
 environment:
-  sdk: ">=3.0.0 <4.0.0"
+  sdk: ">=3.9.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
-
   cupertino_icons: ^1.0.8
-  shared_preferences: ^2.5.3
+  shared_preferences: ^2.5.5
+  intl: ^0.20.3
+  pdf: ^3.13.0
+  printing: ^5.15.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
