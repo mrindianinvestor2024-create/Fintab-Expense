@@ -1736,7 +1736,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
   @override
   void dispose() {
-    unawaited(controller.dispose());
+    controller.dispose();
     super.dispose();
   }
 
