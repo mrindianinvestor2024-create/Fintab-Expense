@@ -2,7 +2,7 @@ name: fintab_expense
 description: FinTab Expense - offline category-wise budget and expense manager.
 publish_to: "none"
 
-version: 2.0.0+2
+version: 3.0.0+3
 
 environment:
   sdk: ">=3.9.0 <4.0.0"
@@ -11,10 +11,15 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  cross_file: ^0.3.5+2
   shared_preferences: ^2.5.5
   intl: ^0.20.3
   pdf: ^3.13.0
   printing: ^5.15.0
+  file_picker: ^10.3.10
+  image_picker: ^1.2.1
+  path_provider: ^2.1.5
+  share_plus: ^12.0.1
 
 dev_dependencies:
   flutter_test:
