@@ -1,309 +1,1519 @@
-import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  runApp(const FinTabExpenseApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const FinTabApp());
 }
 
-class FinTabExpenseApp extends StatelessWidget {
-  const FinTabExpenseApp({super.key});
+class FinTabApp extends StatefulWidget {
+  const FinTabApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'FinTab Expense',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
-        useMaterial3: true,
-      ),
-      home: const HomePage(),
-    );
-  }
+  State<FinTabApp> createState() => _FinTabAppState();
 }
 
-class Entry {
-  final String title;
-  final double amount;
-  final bool isIncome;
-  final DateTime date;
-
-  Entry({
-    required this.title,
-    required this.amount,
-    required this.isIncome,
-    required this.date,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'title': title,
-        'amount': amount,
-        'isIncome': isIncome,
-        'date': date.toIso8601String(),
-      };
-
-  factory Entry.fromJson(Map<String, dynamic> json) => Entry(
-        title: json['title'],
-        amount: (json['amount'] as num).toDouble(),
-        isIncome: json['isIncome'],
-        date: DateTime.parse(json['date']),
-      );
-}
-
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  List<Entry> entries = [];
+class _FinTabAppState extends State<FinTabApp> {
+  final AppModel model = AppModel();
+  bool ready = false;
 
   @override
   void initState() {
     super.initState();
-    loadEntries();
-  }
-
-  Future<void> loadEntries() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('entries');
-    if (raw != null) {
-      final List data = jsonDecode(raw);
-      setState(() {
-        entries = data.map((e) => Entry.fromJson(e)).toList();
-      });
-    }
-  }
-
-  Future<void> saveEntries() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      'entries',
-      jsonEncode(entries.map((e) => e.toJson()).toList()),
-    );
-  }
-
-  double get income =>
-      entries.where((e) => e.isIncome).fold(0, (sum, e) => sum + e.amount);
-
-  double get expense =>
-      entries.where((e) => !e.isIncome).fold(0, (sum, e) => sum + e.amount);
-
-  double get balance => income - expense;
-
-  void addEntry() {
-    final titleController = TextEditingController();
-    final amountController = TextEditingController();
-    bool isIncome = false;
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Add Transaction'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: titleController,
-                    decoration: const InputDecoration(
-                      labelText: 'Title',
-                      hintText: 'e.g. Grocery',
-                    ),
-                  ),
-                  TextField(
-                    controller: amountController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Amount',
-                      prefixText: '₹ ',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Income'),
-                    value: isIncome,
-                    onChanged: (value) {
-                      setDialogState(() => isIncome = value);
-                    },
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () async {
-                    final title = titleController.text.trim();
-                    final amount = double.tryParse(amountController.text);
-
-                    if (title.isEmpty || amount == null || amount <= 0) {
-                      return;
-                    }
-
-                    setState(() {
-                      entries.insert(
-                        0,
-                        Entry(
-                          title: title,
-                          amount: amount,
-                          isIncome: isIncome,
-                          date: DateTime.now(),
-                        ),
-                      );
-                    });
-
-                    await saveEntries();
-                    if (context.mounted) Navigator.pop(context);
-                  },
-                  child: const Text('Save'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> deleteEntry(int index) async {
-    setState(() => entries.removeAt(index));
-    await saveEntries();
+    model.load().then((_) {
+      if (mounted) setState(() => ready = true);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('FinTab Expense'),
-        centerTitle: true,
+    const seed = Color(0xFF0C7C66);
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'FinTab Expense',
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: seed,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: const Color(0xFFF5F7F8),
+        cardTheme: CardThemeData(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+            side: const BorderSide(color: Color(0xFFE6EBED)),
+          ),
+          color: Colors.white,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFFF7F9FA),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide.none,
+          ),
+        ),
       ),
-      body: RefreshIndicator(
-        onRefresh: loadEntries,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Card(
+      home: ready
+          ? MainShell(model: model)
+          : const Scaffold(body: Center(child: CircularProgressIndicator())),
+    );
+  }
+}
+
+class CategoryItem {
+  CategoryItem({
+    required this.id,
+    required this.name,
+    required this.icon,
+    this.selected = false,
+    this.custom = false,
+  });
+
+  String id;
+  String name;
+  String icon;
+  bool selected;
+  bool custom;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'icon': icon,
+        'selected': selected,
+        'custom': custom,
+      };
+
+  factory CategoryItem.fromJson(Map<String, dynamic> j) => CategoryItem(
+        id: j['id'],
+        name: j['name'],
+        icon: j['icon'] ?? '•',
+        selected: j['selected'] ?? false,
+        custom: j['custom'] ?? false,
+      );
+}
+
+class ExpenseEntry {
+  ExpenseEntry({
+    required this.id,
+    required this.title,
+    required this.amount,
+    required this.categoryId,
+    required this.date,
+    this.note = '',
+  });
+
+  String id;
+  String title;
+  double amount;
+  String categoryId;
+  DateTime date;
+  String note;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'amount': amount,
+        'categoryId': categoryId,
+        'date': date.toIso8601String(),
+        'note': note,
+      };
+
+  factory ExpenseEntry.fromJson(Map<String, dynamic> j) => ExpenseEntry(
+        id: j['id'],
+        title: j['title'],
+        amount: (j['amount'] as num).toDouble(),
+        categoryId: j['categoryId'],
+        date: DateTime.parse(j['date']),
+        note: j['note'] ?? '',
+      );
+}
+
+class MonthPlan {
+  MonthPlan({this.budget = 0, Map<String, double>? allocations})
+      : allocations = allocations ?? {};
+
+  double budget;
+  Map<String, double> allocations;
+
+  Map<String, dynamic> toJson() => {
+        'budget': budget,
+        'allocations': allocations,
+      };
+
+  factory MonthPlan.fromJson(Map<String, dynamic> j) {
+    final raw = (j['allocations'] as Map?) ?? {};
+    return MonthPlan(
+      budget: ((j['budget'] ?? 0) as num).toDouble(),
+      allocations: raw.map(
+        (key, value) => MapEntry(key.toString(), (value as num).toDouble()),
+      ),
+    );
+  }
+}
+
+class AppModel extends ChangeNotifier {
+  static const _categoriesKey = 'v2_categories';
+  static const _expensesKey = 'v2_expenses';
+  static const _plansKey = 'v2_plans';
+
+  late SharedPreferences prefs;
+  List<CategoryItem> categories = [];
+  List<ExpenseEntry> expenses = [];
+  Map<String, MonthPlan> plans = {};
+  DateTime activeMonth = DateTime(DateTime.now().year, DateTime.now().month);
+
+  static List<CategoryItem> masterCategories() => [
+        CategoryItem(id: 'grocery', name: 'Grocery', icon: '🛒'),
+        CategoryItem(id: 'rent', name: 'Rent', icon: '🏠'),
+        CategoryItem(id: 'electricity', name: 'Light Bill / Recharge', icon: '💡'),
+        CategoryItem(id: 'school', name: 'Kids School Fees', icon: '🎓'),
+        CategoryItem(id: 'milk', name: 'Milk', icon: '🥛'),
+        CategoryItem(id: 'vegetables', name: 'Vegetables / Fruits', icon: '🥬'),
+        CategoryItem(id: 'medical', name: 'Medicine / Treatment', icon: '💊'),
+        CategoryItem(id: 'petrol', name: 'Petrol / Travel', icon: '⛽'),
+        CategoryItem(id: 'pocket', name: 'Kids Pocket Money', icon: '🧒'),
+        CategoryItem(id: 'homecash', name: 'Home Hand Cash', icon: '🏡'),
+        CategoryItem(id: 'personalcash', name: 'Personal Hand Cash', icon: '👤'),
+        CategoryItem(id: 'emi', name: 'EMI / Loan', icon: '🏦'),
+        CategoryItem(id: 'mobile', name: 'Mobile / Internet', icon: '📱'),
+        CategoryItem(id: 'insurance', name: 'Insurance', icon: '🛡️'),
+        CategoryItem(id: 'entertainment', name: 'Entertainment', icon: '🎬'),
+        CategoryItem(id: 'shopping', name: 'Shopping', icon: '🛍️'),
+        CategoryItem(id: 'business', name: 'Business / Shop', icon: '🏪'),
+        CategoryItem(id: 'staff', name: 'Staff / Salary', icon: '👥'),
+        CategoryItem(id: 'misc', name: 'Remaining / Misc', icon: '📦'),
+      ];
+
+  Future<void> load() async {
+    prefs = await SharedPreferences.getInstance();
+
+    final catText = prefs.getString(_categoriesKey);
+    if (catText == null) {
+      categories = masterCategories();
+    } else {
+      categories = (jsonDecode(catText) as List)
+          .map((e) => CategoryItem.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    }
+
+    final expText = prefs.getString(_expensesKey);
+    if (expText != null) {
+      expenses = (jsonDecode(expText) as List)
+          .map((e) => ExpenseEntry.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    }
+
+    final planText = prefs.getString(_plansKey);
+    if (planText != null) {
+      final raw = Map<String, dynamic>.from(jsonDecode(planText));
+      plans = raw.map(
+        (key, value) => MapEntry(
+          key,
+          MonthPlan.fromJson(Map<String, dynamic>.from(value)),
+        ),
+      );
+    }
+    notifyListeners();
+  }
+
+  String monthKey([DateTime? month]) {
+    final d = month ?? activeMonth;
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}';
+  }
+
+  MonthPlan get currentPlan => plans.putIfAbsent(monthKey(), () => MonthPlan());
+
+  List<CategoryItem> get selectedCategories =>
+      categories.where((c) => c.selected).toList();
+
+  double get totalSpent => expenses
+      .where((e) => _sameMonth(e.date, activeMonth))
+      .fold(0.0, (sum, e) => sum + e.amount);
+
+  double get totalRemaining => currentPlan.budget - totalSpent;
+
+  double get allocatedTotal =>
+      currentPlan.allocations.values.fold(0.0, (a, b) => a + b);
+
+  double spentFor(String categoryId) => expenses
+      .where((e) =>
+          e.categoryId == categoryId && _sameMonth(e.date, activeMonth))
+      .fold(0.0, (sum, e) => sum + e.amount);
+
+  double allocationFor(String categoryId) =>
+      currentPlan.allocations[categoryId] ?? 0;
+
+  List<ExpenseEntry> get monthExpenses {
+    final list =
+        expenses.where((e) => _sameMonth(e.date, activeMonth)).toList();
+    list.sort((a, b) => b.date.compareTo(a.date));
+    return list;
+  }
+
+  CategoryItem? categoryById(String id) {
+    try {
+      return categories.firstWhere((c) => c.id == id);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> setBudget(double value) async {
+    currentPlan.budget = value;
+    await _savePlans();
+    notifyListeners();
+  }
+
+  Future<void> setAllocation(String categoryId, double value) async {
+    currentPlan.allocations[categoryId] = value;
+    await _savePlans();
+    notifyListeners();
+  }
+
+  Future<void> toggleCategory(String id, bool selected) async {
+    final c = categoryById(id);
+    if (c == null) return;
+    c.selected = selected;
+    await _saveCategories();
+    notifyListeners();
+  }
+
+  Future<void> addCustomCategory(String name) async {
+    final clean = name.trim();
+    if (clean.isEmpty) return;
+    categories.add(CategoryItem(
+      id: 'custom_${DateTime.now().microsecondsSinceEpoch}',
+      name: clean,
+      icon: '⭐',
+      selected: true,
+      custom: true,
+    ));
+    await _saveCategories();
+    notifyListeners();
+  }
+
+  Future<void> deleteCustomCategory(String id) async {
+    categories.removeWhere((c) => c.id == id && c.custom);
+    await _saveCategories();
+    notifyListeners();
+  }
+
+  Future<void> addExpense({
+    required String title,
+    required double amount,
+    required String categoryId,
+    required DateTime date,
+    String note = '',
+  }) async {
+    expenses.add(ExpenseEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      title: title.trim(),
+      amount: amount,
+      categoryId: categoryId,
+      date: date,
+      note: note.trim(),
+    ));
+    await _saveExpenses();
+    notifyListeners();
+  }
+
+  Future<void> deleteExpense(String id) async {
+    expenses.removeWhere((e) => e.id == id);
+    await _saveExpenses();
+    notifyListeners();
+  }
+
+  void previousMonth() {
+    activeMonth = DateTime(activeMonth.year, activeMonth.month - 1);
+    notifyListeners();
+  }
+
+  void nextMonth() {
+    activeMonth = DateTime(activeMonth.year, activeMonth.month + 1);
+    notifyListeners();
+  }
+
+  Future<void> _saveCategories() async {
+    await prefs.setString(
+      _categoriesKey,
+      jsonEncode(categories.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<void> _saveExpenses() async {
+    await prefs.setString(
+      _expensesKey,
+      jsonEncode(expenses.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<void> _savePlans() async {
+    await prefs.setString(
+      _plansKey,
+      jsonEncode(plans.map((k, v) => MapEntry(k, v.toJson()))),
+    );
+  }
+
+  static bool _sameMonth(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month;
+}
+
+class MainShell extends StatefulWidget {
+  const MainShell({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  State<MainShell> createState() => _MainShellState();
+}
+
+class _MainShellState extends State<MainShell> {
+  int index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final screens = [
+      DashboardScreen(model: widget.model),
+      StatementScreen(model: widget.model),
+      CategoriesScreen(model: widget.model),
+    ];
+    return Scaffold(
+      body: SafeArea(child: screens[index]),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: index,
+        onDestinationSelected: (v) => setState(() => index = v),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
+            label: 'Dashboard',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.receipt_long_outlined),
+            selectedIcon: Icon(Icons.receipt_long),
+            label: 'Statement',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.category_outlined),
+            selectedIcon: Icon(Icons.category),
+            label: 'Categories',
+          ),
+        ],
+      ),
+      floatingActionButton: index == 0
+          ? FloatingActionButton.extended(
+              onPressed: () => showAddExpenseSheet(context, widget.model),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Expense'),
+            )
+          : null,
+    );
+  }
+}
+
+class DashboardScreen extends StatelessWidget {
+  const DashboardScreen({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: model,
+      builder: (context, _) {
+        final money = NumberFormat.currency(
+          locale: 'en_IN',
+          symbol: '₹',
+          decimalDigits: 0,
+        );
+        return CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
+                padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+                child: Row(
                   children: [
-                    const Text(
-                      'Current Balance',
-                      style: TextStyle(fontSize: 16),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '₹${balance.toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
+                    const BrandMark(size: 46),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'FinTab Expense',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          Text(
+                            'Plan • Allocate • Track • Save',
+                            style: TextStyle(color: Colors.black54),
+                          ),
+                        ],
                       ),
+                    ),
+                    IconButton(
+                      tooltip: 'Export PDF',
+                      onPressed: () => exportPdf(context, model),
+                      icon: const Icon(Icons.picture_as_pdf_outlined),
                     ),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _summaryCard('Income', income, Icons.arrow_downward),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _summaryCard('Expense', expense, Icons.arrow_upward),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Transactions',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            if (entries.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(30),
-                child: Center(
-                  child: Text('No transactions yet. Tap + to add one.'),
+            SliverToBoxAdapter(child: MonthSelector(model: model)),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(26),
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF073B33), Color(0xFF0C7C66)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Monthly Budget',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        money.format(model.currentPlan.budget),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 34,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _DarkMetric(
+                              label: 'Spent',
+                              value: money.format(model.totalSpent),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _DarkMetric(
+                              label: 'Remaining',
+                              value: money.format(model.totalRemaining),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: () => showBudgetDialog(context, model),
+                              icon: const Icon(Icons.account_balance_wallet_outlined),
+                              label: const Text('Set Budget'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => AllocationScreen(model: model),
+                                ),
+                              ),
+                              icon: const Icon(Icons.tune),
+                              label: const Text('Allocate'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ...entries.asMap().entries.map(
-              (item) {
-                final index = item.key;
-                final entry = item.value;
-                return Card(
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      child: Icon(
-                        entry.isIncome
-                            ? Icons.arrow_downward
-                            : Icons.arrow_upward,
+            ),
+            if (model.selectedCategories.isEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.category_outlined, size: 40),
+                          const SizedBox(height: 10),
+                          const Text(
+                            'Choose your expense categories',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 18,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Only categories you select will appear on your dashboard.',
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
                       ),
                     ),
-                    title: Text(entry.title),
-                    subtitle: Text(
-                      '${entry.date.day}/${entry.date.month}/${entry.date.year}',
+                  ),
+                ),
+              )
+            else ...[
+              SliverToBoxAdapter(
+                child: _SectionHeader(
+                  title: 'Category Funds',
+                  action: 'Manage',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AllocationScreen(model: model),
                     ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '${entry.isIncome ? '+' : '-'}₹${entry.amount.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: entry.isIncome
-                                ? Colors.green
-                                : Colors.red,
+                  ),
+                ),
+              ),
+              SliverList.builder(
+                itemCount: model.selectedCategories.length,
+                itemBuilder: (context, i) {
+                  final c = model.selectedCategories[i];
+                  final allocated = model.allocationFor(c.id);
+                  final spent = model.spentFor(c.id);
+                  final remaining = allocated - spent;
+                  final progress = allocated <= 0
+                      ? 0.0
+                      : (spent / allocated).clamp(0.0, 1.0);
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                    child: Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(15),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Text(c.icon, style: const TextStyle(fontSize: 24)),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    c.name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  money.format(remaining),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    color: remaining < 0
+                                        ? Colors.red.shade700
+                                        : const Color(0xFF0C7C66),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            LinearProgressIndicator(
+                              value: progress,
+                              minHeight: 8,
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Allocated ${money.format(allocated)}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  'Spent ${money.format(spent)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black54,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+            SliverToBoxAdapter(
+              child: _SectionHeader(
+                title: 'Recent Expenses',
+                action: 'Statement',
+                onTap: () {},
+              ),
+            ),
+            if (model.monthExpenses.isEmpty)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  child: Center(
+                    child: Text(
+                      'No expenses yet. Tap “Add Expense” to start.',
+                      style: TextStyle(color: Colors.black54),
+                    ),
+                  ),
+                ),
+              )
+            else
+              SliverList.builder(
+                itemCount: model.monthExpenses.take(5).length,
+                itemBuilder: (context, i) {
+                  final e = model.monthExpenses[i];
+                  final c = model.categoryById(e.categoryId);
+                  return ExpenseTile(
+                    entry: e,
+                    category: c,
+                    money: money,
+                    onDelete: () => confirmDeleteExpense(context, model, e),
+                  );
+                },
+              ),
+            const SliverToBoxAdapter(child: SizedBox(height: 110)),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class MonthSelector extends StatelessWidget {
+  const MonthSelector({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: model.previousMonth,
+            icon: const Icon(Icons.chevron_left),
+          ),
+          Expanded(
+            child: Text(
+              DateFormat('MMMM yyyy').format(model.activeMonth),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+            ),
+          ),
+          IconButton(
+            onPressed: model.nextMonth,
+            icon: const Icon(Icons.chevron_right),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DarkMetric extends StatelessWidget {
+  const _DarkMetric({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.white70)),
+          const SizedBox(height: 3),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.title,
+    required this.action,
+    required this.onTap,
+  });
+
+  final String title;
+  final String action;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 18, 10, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900),
+            ),
+          ),
+          TextButton(onPressed: onTap, child: Text(action)),
+        ],
+      ),
+    );
+  }
+}
+
+class BrandMark extends StatelessWidget {
+  const BrandMark({super.key, this.size = 52});
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF073B33), Color(0xFF14A784)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(size * .28),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF0C7C66).withValues(alpha: .18),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          )
+        ],
+      ),
+      child: Center(
+        child: Text(
+          'F₹',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w900,
+            fontSize: size * .37,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AllocationScreen extends StatelessWidget {
+  const AllocationScreen({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Allocate Category Funds')),
+      body: AnimatedBuilder(
+        animation: model,
+        builder: (context, _) {
+          final budget = model.currentPlan.budget;
+          final left = budget - model.allocatedTotal;
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Card(
+                child: ListTile(
+                  title: const Text('Budget allocation balance'),
+                  subtitle: Text(
+                    'Budget ₹${budget.toStringAsFixed(0)} • Allocated ₹${model.allocatedTotal.toStringAsFixed(0)}',
+                  ),
+                  trailing: Text(
+                    '₹${left.toStringAsFixed(0)}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w900,
+                      color: left < 0 ? Colors.red : const Color(0xFF0C7C66),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (model.selectedCategories.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'First select categories from the Categories tab.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ...model.selectedCategories.map((c) {
+                final controller = TextEditingController(
+                  text: model.allocationFor(c.id) == 0
+                      ? ''
+                      : model.allocationFor(c.id).toStringAsFixed(0),
+                );
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        children: [
+                          Text(c.icon, style: const TextStyle(fontSize: 24)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              c.name,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w700),
+                            ),
                           ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => deleteEntry(index),
-                        ),
-                      ],
+                          SizedBox(
+                            width: 125,
+                            child: TextField(
+                              controller: controller,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                decimal: true,
+                              ),
+                              decoration: const InputDecoration(
+                                prefixText: '₹ ',
+                                hintText: '0',
+                              ),
+                              onSubmitted: (v) =>
+                                  model.setAllocation(c.id, parseMoney(v)),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 );
-              },
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: addEntry,
-        icon: const Icon(Icons.add),
-        label: const Text('Add'),
+              }),
+              const SizedBox(height: 10),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.check),
+                label: const Text('Done'),
+              ),
+            ],
+          );
+        },
       ),
     );
+  }
+}
+
+class CategoriesScreen extends StatelessWidget {
+  const CategoriesScreen({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: model,
+      builder: (context, _) {
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 100),
+          children: [
+            const Row(
+              children: [
+                BrandMark(size: 42),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Choose Categories',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Select only what you need. Unselected categories stay hidden from the dashboard.',
+              style: TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.tonalIcon(
+              onPressed: () => showAddCategoryDialog(context, model),
+              icon: const Icon(Icons.add),
+              label: const Text('Create Custom Category'),
+            ),
+            const SizedBox(height: 12),
+            ...model.categories.map(
+              (c) => Card(
+                child: SwitchListTile(
+                  value: c.selected,
+                  onChanged: (v) => model.toggleCategory(c.id, v),
+                  secondary: Text(c.icon, style: const TextStyle(fontSize: 24)),
+                  title: Text(
+                    c.name,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: c.custom ? const Text('Custom category') : null,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class StatementScreen extends StatelessWidget {
+  const StatementScreen({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: model,
+      builder: (context, _) {
+        final money = NumberFormat.currency(
+          locale: 'en_IN',
+          symbol: '₹',
+          decimalDigits: 0,
+        );
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+              child: Row(
+                children: [
+                  const BrandMark(size: 42),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Monthly Statement',
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Create PDF',
+                    onPressed: () => exportPdf(context, model),
+                    icon: const Icon(Icons.picture_as_pdf),
+                  ),
+                ],
+              ),
+            ),
+            MonthSelector(model: model),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _MiniMetric(
+                          'Budget',
+                          money.format(model.currentPlan.budget),
+                        ),
+                      ),
+                      Expanded(
+                        child: _MiniMetric(
+                          'Spent',
+                          money.format(model.totalSpent),
+                        ),
+                      ),
+                      Expanded(
+                        child: _MiniMetric(
+                          'Left',
+                          money.format(model.totalRemaining),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: model.monthExpenses.isEmpty
+                  ? const Center(child: Text('No transactions this month.'))
+                  : ListView.builder(
+                      padding: const EdgeInsets.only(bottom: 24),
+                      itemCount: model.monthExpenses.length,
+                      itemBuilder: (context, i) {
+                        final e = model.monthExpenses[i];
+                        return ExpenseTile(
+                          entry: e,
+                          category: model.categoryById(e.categoryId),
+                          money: money,
+                          onDelete: () =>
+                              confirmDeleteExpense(context, model, e),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _MiniMetric extends StatelessWidget {
+  const _MiniMetric(this.label, this.value);
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(color: Colors.black54, fontSize: 12)),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+        ),
+      ],
+    );
+  }
+}
+
+class ExpenseTile extends StatelessWidget {
+  const ExpenseTile({
+    super.key,
+    required this.entry,
+    required this.category,
+    required this.money,
+    required this.onDelete,
+  });
+
+  final ExpenseEntry entry;
+  final CategoryItem? category;
+  final NumberFormat money;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Card(
+        child: ListTile(
+          leading: CircleAvatar(
+            child: Text(category?.icon ?? '•'),
+          ),
+          title: Text(
+            entry.title,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(
+            '${category?.name ?? 'Unknown'} • ${DateFormat('dd MMM yyyy').format(entry.date)}'
+            '${entry.note.isEmpty ? '' : '\n${entry.note}'}',
+          ),
+          isThreeLine: entry.note.isNotEmpty,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '-${money.format(entry.amount)}',
+                style: TextStyle(
+                  color: Colors.red.shade700,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (v) {
+                  if (v == 'delete') onDelete();
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> showBudgetDialog(BuildContext context, AppModel model) async {
+  final controller = TextEditingController(
+    text: model.currentPlan.budget == 0
+        ? ''
+        : model.currentPlan.budget.toStringAsFixed(0),
+  );
+  await showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Set Monthly Budget'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: const InputDecoration(
+          labelText: 'Total monthly budget',
+          prefixText: '₹ ',
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            await model.setBudget(parseMoney(controller.text));
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> showAddCategoryDialog(
+  BuildContext context,
+  AppModel model,
+) async {
+  final controller = TextEditingController();
+  await showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('New Category'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.words,
+        decoration: const InputDecoration(
+          labelText: 'Category name',
+          hintText: 'e.g. Farm, Tuition, Shop Stock',
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            await model.addCustomCategory(controller.text);
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          child: const Text('Add'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> showAddExpenseSheet(
+  BuildContext context,
+  AppModel model,
+) async {
+  if (model.selectedCategories.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('First select at least one category.')),
+    );
+    return;
   }
 
-  Widget _summaryCard(String label, double value, IconData icon) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
+  final title = TextEditingController();
+  final amount = TextEditingController();
+  final note = TextEditingController();
+  String categoryId = model.selectedCategories.first.id;
+  DateTime date = DateTime.now();
+
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) {
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+            18,
+            18,
+            18,
+            MediaQuery.of(ctx).viewInsets.bottom + 18,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Add Expense',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: title,
+                  textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(
+                    labelText: 'Expense title',
+                    hintText: 'e.g. Weekly grocery',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: amount,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Amount',
+                    prefixText: '₹ ',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: categoryId,
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: model.selectedCategories
+                      .map(
+                        (c) => DropdownMenuItem(
+                          value: c.id,
+                          child: Text('${c.icon}  ${c.name}'),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) setLocal(() => categoryId = v);
+                  },
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  tileColor: const Color(0xFFF7F9FA),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  leading: const Icon(Icons.calendar_month),
+                  title: const Text('Date'),
+                  subtitle: Text(DateFormat('dd MMMM yyyy').format(date)),
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: ctx,
+                      initialDate: date,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) setLocal(() => date = picked);
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: note,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Note (optional)',
+                  ),
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      final value = parseMoney(amount.text);
+                      if (title.text.trim().isEmpty || value <= 0) {
+                        ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(
+                            content: Text('Enter title and valid amount.'),
+                          ),
+                        );
+                        return;
+                      }
+                      await model.addExpense(
+                        title: title.text,
+                        amount: value,
+                        categoryId: categoryId,
+                        date: date,
+                        note: note.text,
+                      );
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    },
+                    icon: const Icon(Icons.save),
+                    label: const Text('Save Expense'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
+
+double parseMoney(String text) {
+  return double.tryParse(text.replaceAll(',', '').trim()) ?? 0;
+}
+
+Future<void> confirmDeleteExpense(
+  BuildContext context,
+  AppModel model,
+  ExpenseEntry e,
+) async {
+  final yes = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Delete expense?'),
+      content: Text('Remove “${e.title}” from the statement?'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
+  if (yes == true) await model.deleteExpense(e.id);
+}
+
+Future<void> exportPdf(BuildContext context, AppModel model) async {
+  final doc = pw.Document();
+  final monthName = DateFormat('MMMM yyyy').format(model.activeMonth);
+  final entries = model.monthExpenses;
+
+  doc.addPage(
+    pw.MultiPage(
+      pageFormat: PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.all(28),
+      build: (ctx) => [
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
           children: [
-            Icon(icon),
-            const SizedBox(height: 5),
-            Text(label),
-            const SizedBox(height: 4),
-            Text(
-              '₹${value.toStringAsFixed(2)}',
-              style: const TextStyle(fontWeight: FontWeight.bold),
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  'FinTab Expense',
+                  style: pw.TextStyle(
+                    fontSize: 24,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.Text('Monthly Statement - $monthName'),
+              ],
+            ),
+            pw.Text(
+              'Generated ${DateFormat('dd MMM yyyy').format(DateTime.now())}',
+              style: const pw.TextStyle(fontSize: 9),
             ),
           ],
         ),
-      ),
+        pw.SizedBox(height: 18),
+        pw.Container(
+          padding: const pw.EdgeInsets.all(12),
+          decoration: pw.BoxDecoration(
+            border: pw.Border.all(color: PdfColors.grey400),
+            borderRadius: pw.BorderRadius.circular(8),
+          ),
+          child: pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+            children: [
+              _pdfMetric('Budget', model.currentPlan.budget),
+              _pdfMetric('Spent', model.totalSpent),
+              _pdfMetric('Remaining', model.totalRemaining),
+            ],
+          ),
+        ),
+        pw.SizedBox(height: 18),
+        pw.Text(
+          'Category Summary',
+          style: pw.TextStyle(fontSize: 15, fontWeight: pw.FontWeight.bold),
+        ),
+        pw.SizedBox(height: 8),
+        pw.TableHelper.fromTextArray(
+          headers: const ['Category', 'Allocated', 'Spent', 'Remaining'],
+          data: model.selectedCategories.map((c) {
+            final allocated = model.allocationFor(c.id);
+            final spent = model.spentFor(c.id);
+            return [
+              c.name,
+              'Rs. ${allocated.toStringAsFixed(0)}',
+              'Rs. ${spent.toStringAsFixed(0)}',
+              'Rs. ${(allocated - spent).toStringAsFixed(0)}',
+            ];
+          }).toList(),
+          headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+          headerDecoration: const pw.BoxDecoration(color: PdfColors.grey200),
+          cellStyle: const pw.TextStyle(fontSize: 9),
+        ),
+        pw.SizedBox(height: 18),
+        pw.Text(
+          'Expense Statement',
+          style: pw.TextStyle(fontSize: 15, fontWeight: pw.FontWeight.bold),
+        ),
+        pw.SizedBox(height: 8),
+        pw.TableHelper.fromTextArray(
+          headers: const ['Date', 'Category', 'Details', 'Amount'],
+          data: entries.map((e) {
+            final c = model.categoryById(e.categoryId);
+            return [
+              DateFormat('dd-MM-yyyy').format(e.date),
+              c?.name ?? 'Unknown',
+              e.note.isEmpty ? e.title : '${e.title} - ${e.note}',
+              'Rs. ${e.amount.toStringAsFixed(2)}',
+            ];
+          }).toList(),
+          headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+          headerDecoration: const pw.BoxDecoration(color: PdfColors.grey200),
+          cellStyle: const pw.TextStyle(fontSize: 8),
+          cellAlignment: pw.Alignment.centerLeft,
+        ),
+        pw.SizedBox(height: 18),
+        pw.Text(
+          'FinTab Expense • Offline personal budget & expense manager',
+          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+        ),
+      ],
+    ),
+  );
+
+  try {
+    await Printing.sharePdf(
+      bytes: await doc.save(),
+      filename: 'FinTab_Expense_${model.monthKey()}.pdf',
     );
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not create PDF on this device.')),
+      );
+    }
   }
+}
+
+pw.Widget _pdfMetric(String label, double value) {
+  return pw.Column(
+    children: [
+      pw.Text(label, style: const pw.TextStyle(fontSize: 9)),
+      pw.Text(
+        'Rs. ${value.toStringAsFixed(0)}',
+        style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold),
+      ),
+    ],
+  );
 }
