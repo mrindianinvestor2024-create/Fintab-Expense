@@ -1,4 +1,4 @@
-name: Build FinTab Expense V3 APK and AAB
+name: Build FinTab Expense V3.1 Fixed APK and AAB
 
 on:
   workflow_dispatch:
@@ -49,6 +49,36 @@ jobs:
           fi
           sed -i 's/android:label="fintab_expense"/android:label="FinTab Expense"/g' android/app/src/main/AndroidManifest.xml
 
+          MAIN_ACTIVITY=$(find android/app/src/main -type f \( -name "MainActivity.kt" -o -name "MainActivity.java" \) | head -n 1)
+          if [ -z "$MAIN_ACTIVITY" ]; then
+            echo "MainActivity source file not found"
+            exit 1
+          fi
+          sed -i 's/package com\.thefintab\.fintab_expense/package com.thefintab.expense/g' "$MAIN_ACTIVITY"
+          grep -q 'package com.thefintab.expense' "$MAIN_ACTIVITY"
+
+      - name: Restore stable test signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: fintab-expense-test-signing-v1
+
+      - name: Create stable test signing key when missing
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=FinTab Expense Test,O=The FinTab,C=IN"
+          fi
+
       - name: Get dependencies
         run: flutter pub get
 
@@ -61,13 +91,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-V3-APK
+          name: FinTab-Expense-V3.1-Fixed-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-V3-AAB
+          name: FinTab-Expense-V3.1-Fixed-AAB
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
