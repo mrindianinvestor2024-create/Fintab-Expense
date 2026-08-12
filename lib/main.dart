@@ -1,10 +1,16 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:cross_file/cross_file.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -135,6 +141,47 @@ class ExpenseEntry {
       );
 }
 
+class DiaryEntry {
+  DiaryEntry({required this.id, required this.date, required this.text});
+  String id;
+  DateTime date;
+  String text;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'date': date.toIso8601String(),
+        'text': text,
+      };
+
+  factory DiaryEntry.fromJson(Map<String, dynamic> j) => DiaryEntry(
+        id: j['id'],
+        date: DateTime.parse(j['date']),
+        text: j['text'] ?? '',
+      );
+}
+
+class ProfileData {
+  ProfileData({this.name = '', this.mobile = '', this.purpose = 'House Head', this.photoPath = ''});
+  String name;
+  String mobile;
+  String purpose;
+  String photoPath;
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'mobile': mobile,
+        'purpose': purpose,
+        'photoPath': photoPath,
+      };
+
+  factory ProfileData.fromJson(Map<String, dynamic> j) => ProfileData(
+        name: j['name'] ?? '',
+        mobile: j['mobile'] ?? '',
+        purpose: j['purpose'] ?? 'House Head',
+        photoPath: j['photoPath'] ?? '',
+      );
+}
+
 class MonthPlan {
   MonthPlan({this.budget = 0, Map<String, double>? allocations})
       : allocations = allocations ?? {};
@@ -162,11 +209,17 @@ class AppModel extends ChangeNotifier {
   static const _categoriesKey = 'v2_categories';
   static const _expensesKey = 'v2_expenses';
   static const _plansKey = 'v2_plans';
+  static const _profileKey = 'v3_profile';
+  static const _diaryKey = 'v3_diary';
+  static const _draftKey = 'v3_expense_draft';
 
   late SharedPreferences prefs;
   List<CategoryItem> categories = [];
   List<ExpenseEntry> expenses = [];
   Map<String, MonthPlan> plans = {};
+  List<DiaryEntry> diaryEntries = [];
+  ProfileData profile = ProfileData();
+  Map<String, dynamic> expenseDraft = {};
   DateTime activeMonth = DateTime(DateTime.now().year, DateTime.now().month);
 
   static List<CategoryItem> masterCategories() => [
@@ -186,9 +239,21 @@ class AppModel extends ChangeNotifier {
         CategoryItem(id: 'insurance', name: 'Insurance', icon: '🛡️'),
         CategoryItem(id: 'entertainment', name: 'Entertainment', icon: '🎬'),
         CategoryItem(id: 'shopping', name: 'Shopping', icon: '🛍️'),
+        CategoryItem(id: 'familyshopping', name: 'Family Shopping', icon: '👨‍👩‍👧‍👦'),
+        CategoryItem(id: 'travel', name: 'Travelling', icon: '🚗'),
+        CategoryItem(id: 'vacation', name: 'Vacation / Yatra', icon: '🧳'),
+        CategoryItem(id: 'parents', name: 'Give Mother / Father', icon: '🙏'),
+        CategoryItem(id: 'festival', name: 'Festival Celebration', icon: '🪔'),
+        CategoryItem(id: 'gadgets', name: 'New Gadgets Buying', icon: '💻'),
+        CategoryItem(id: 'classes', name: 'Extra Class / Activity', icon: '📚'),
+        CategoryItem(id: 'subscription', name: 'Subscriptions', icon: '🔁'),
         CategoryItem(id: 'business', name: 'Business / Shop', icon: '🏪'),
+        CategoryItem(id: 'shoprent', name: 'Shop / Office Rent', icon: '🏬'),
+        CategoryItem(id: 'shoputilities', name: 'Shop Light / Wi-Fi Bill', icon: '📶'),
         CategoryItem(id: 'staff', name: 'Staff / Salary', icon: '👥'),
+        CategoryItem(id: 'maintenance', name: 'Office Maintenance', icon: '🧰'),
         CategoryItem(id: 'misc', name: 'Remaining / Misc', icon: '📦'),
+        CategoryItem(id: 'other', name: 'Other — Create Your Own', icon: '✍️'),
       ];
 
   Future<void> load() async {
@@ -201,6 +266,9 @@ class AppModel extends ChangeNotifier {
       categories = (jsonDecode(catText) as List)
           .map((e) => CategoryItem.fromJson(Map<String, dynamic>.from(e)))
           .toList();
+      for (final master in masterCategories()) {
+        if (!categories.any((c) => c.id == master.id)) categories.add(master);
+      }
     }
 
     final expText = prefs.getString(_expensesKey);
@@ -220,6 +288,18 @@ class AppModel extends ChangeNotifier {
         ),
       );
     }
+    final profileText = prefs.getString(_profileKey);
+    if (profileText != null) {
+      profile = ProfileData.fromJson(Map<String, dynamic>.from(jsonDecode(profileText)));
+    }
+    final diaryText = prefs.getString(_diaryKey);
+    if (diaryText != null) {
+      diaryEntries = (jsonDecode(diaryText) as List)
+          .map((e) => DiaryEntry.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    }
+    final draftText = prefs.getString(_draftKey);
+    if (draftText != null) expenseDraft = Map<String, dynamic>.from(jsonDecode(draftText));
     notifyListeners();
   }
 
@@ -277,6 +357,12 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setAllocations(Map<String, double> values) async {
+    currentPlan.allocations.addAll(values);
+    await _savePlans();
+    notifyListeners();
+  }
+
   Future<void> toggleCategory(String id, bool selected) async {
     final c = categoryById(id);
     if (c == null) return;
@@ -327,6 +413,107 @@ class AppModel extends ChangeNotifier {
   Future<void> deleteExpense(String id) async {
     expenses.removeWhere((e) => e.id == id);
     await _saveExpenses();
+    notifyListeners();
+  }
+
+  Future<void> updateExpense(ExpenseEntry entry) async {
+    final i = expenses.indexWhere((e) => e.id == entry.id);
+    if (i < 0) return;
+    expenses[i] = entry;
+    await _saveExpenses();
+    notifyListeners();
+  }
+
+  Future<void> saveDraft(Map<String, dynamic> draft) async {
+    expenseDraft = draft;
+    await prefs.setString(_draftKey, jsonEncode(draft));
+  }
+
+  Future<void> clearDraft() async {
+    expenseDraft = {};
+    await prefs.remove(_draftKey);
+  }
+
+  Future<void> saveProfile(ProfileData value) async {
+    profile = value;
+    await prefs.setString(_profileKey, jsonEncode(profile.toJson()));
+    notifyListeners();
+  }
+
+  Future<void> saveDiary(DateTime date, String text) async {
+    final clean = text.trim();
+    final existing = diaryEntries.indexWhere((e) =>
+        e.date.year == date.year && e.date.month == date.month && e.date.day == date.day);
+    if (clean.isEmpty) {
+      if (existing >= 0) diaryEntries.removeAt(existing);
+    } else if (existing >= 0) {
+      diaryEntries[existing].text = clean;
+    } else {
+      diaryEntries.add(DiaryEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        date: date,
+        text: clean,
+      ));
+    }
+    await prefs.setString(_diaryKey, jsonEncode(diaryEntries.map((e) => e.toJson()).toList()));
+    notifyListeners();
+  }
+
+  DiaryEntry? diaryFor(DateTime date) {
+    try {
+      return diaryEntries.firstWhere((e) =>
+          e.date.year == date.year && e.date.month == date.month && e.date.day == date.day);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  double get dailyAverage {
+    final days = DateTime.now().year == activeMonth.year && DateTime.now().month == activeMonth.month
+        ? DateTime.now().day
+        : DateTime(activeMonth.year, activeMonth.month + 1, 0).day;
+    return days == 0 ? 0 : totalSpent / days;
+  }
+
+  bool get isAboveAveragePace {
+    if (currentPlan.budget <= 0) return false;
+    final totalDays = DateTime(activeMonth.year, activeMonth.month + 1, 0).day;
+    final now = DateTime.now();
+    final elapsed = now.year == activeMonth.year && now.month == activeMonth.month ? now.day : totalDays;
+    final expectedByNow = currentPlan.budget * elapsed / totalDays;
+    return totalSpent > expectedByNow;
+  }
+
+  CategoryItem? get highestSpentCategory {
+    if (selectedCategories.isEmpty) return null;
+    final sorted = [...selectedCategories]..sort((a, b) => spentFor(b.id).compareTo(spentFor(a.id)));
+    return spentFor(sorted.first.id) > 0 ? sorted.first : null;
+  }
+
+  Map<String, dynamic> backupJson() => {
+        'app': 'FinTab Expense',
+        'version': 3,
+        'createdAt': DateTime.now().toIso8601String(),
+        'profile': profile.toJson(),
+        'categories': categories.map((e) => e.toJson()).toList(),
+        'expenses': expenses.map((e) => e.toJson()).toList(),
+        'plans': plans.map((k, v) => MapEntry(k, v.toJson())),
+        'diary': diaryEntries.map((e) => e.toJson()).toList(),
+      };
+
+  Future<void> restoreBackup(Map<String, dynamic> data) async {
+    if (data['app'] != 'FinTab Expense') throw const FormatException('Invalid FinTab backup');
+    profile = ProfileData.fromJson(Map<String, dynamic>.from(data['profile'] ?? {}));
+    categories = (data['categories'] as List).map((e) => CategoryItem.fromJson(Map<String, dynamic>.from(e))).toList();
+    expenses = (data['expenses'] as List).map((e) => ExpenseEntry.fromJson(Map<String, dynamic>.from(e))).toList();
+    final rawPlans = Map<String, dynamic>.from(data['plans'] ?? {});
+    plans = rawPlans.map((k, v) => MapEntry(k, MonthPlan.fromJson(Map<String, dynamic>.from(v))));
+    diaryEntries = ((data['diary'] as List?) ?? []).map((e) => DiaryEntry.fromJson(Map<String, dynamic>.from(e))).toList();
+    await _saveCategories();
+    await _saveExpenses();
+    await _savePlans();
+    await prefs.setString(_profileKey, jsonEncode(profile.toJson()));
+    await prefs.setString(_diaryKey, jsonEncode(diaryEntries.map((e) => e.toJson()).toList()));
     notifyListeners();
   }
 
@@ -382,6 +569,8 @@ class _MainShellState extends State<MainShell> {
       DashboardScreen(model: widget.model),
       StatementScreen(model: widget.model),
       CategoriesScreen(model: widget.model),
+      DiaryScreen(model: widget.model),
+      MoreScreen(model: widget.model),
     ];
     return Scaffold(
       body: SafeArea(child: screens[index]),
@@ -403,6 +592,16 @@ class _MainShellState extends State<MainShell> {
             icon: Icon(Icons.category_outlined),
             selectedIcon: Icon(Icons.category),
             label: 'Categories',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.menu_book_outlined),
+            selectedIcon: Icon(Icons.menu_book),
+            label: 'Diary',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: 'Profile',
           ),
         ],
       ),
@@ -438,21 +637,21 @@ class DashboardScreen extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
                 child: Row(
                   children: [
-                    const BrandMark(size: 46),
+                    ProfileAvatar(model: model, size: 46),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'FinTab Expense',
+                            model.profile.name.isEmpty ? 'FinTab Expense' : model.profile.name,
                             style: TextStyle(
                               fontSize: 22,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
                           Text(
-                            'Plan • Allocate • Track • Save',
+                            '${model.profile.purpose} • Plan • Track • Save',
                             style: TextStyle(color: Colors.black54),
                           ),
                         ],
@@ -468,6 +667,35 @@ class DashboardScreen extends StatelessWidget {
               ),
             ),
             SliverToBoxAdapter(child: MonthSelector(model: model)),
+            if (model.totalSpent > 0)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+                  child: Card(
+                    color: model.isAboveAveragePace
+                        ? const Color(0xFFFFECEC)
+                        : const Color(0xFFEAF8F4),
+                    child: ListTile(
+                      leading: Icon(
+                        model.isAboveAveragePace
+                            ? Icons.warning_amber_rounded
+                            : Icons.insights,
+                      ),
+                      title: Text(
+                        model.isAboveAveragePace
+                            ? 'Warning: spending is above your monthly average'
+                            : 'Daily average ₹${model.dailyAverage.toStringAsFixed(0)}',
+                      ),
+                      subtitle: Text(
+                        model.highestSpentCategory == null
+                            ? 'Keep recording expenses to receive saving advice.'
+                            : 'Highest spending: ${model.highestSpentCategory!.name}. '
+                                '${model.totalRemaining > 0 ? 'Move the remaining ₹${model.totalRemaining.toStringAsFixed(0)} to savings at month end.' : 'Review this category to control overspending.'}',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -691,6 +919,7 @@ class DashboardScreen extends StatelessWidget {
                     entry: e,
                     category: c,
                     money: money,
+                    onEdit: () => showAddExpenseSheet(context, model, existing: e),
                     onDelete: () => confirmDeleteExpense(context, model, e),
                   );
                 },
@@ -834,9 +1063,47 @@ class BrandMark extends StatelessWidget {
   }
 }
 
-class AllocationScreen extends StatelessWidget {
+class AllocationScreen extends StatefulWidget {
   const AllocationScreen({super.key, required this.model});
   final AppModel model;
+
+  @override
+  State<AllocationScreen> createState() => _AllocationScreenState();
+}
+
+class _AllocationScreenState extends State<AllocationScreen> {
+  final Map<String, TextEditingController> controllers = {};
+
+  AppModel get model => widget.model;
+
+  @override
+  void initState() {
+    super.initState();
+    for (final c in model.selectedCategories) {
+      final value = model.allocationFor(c.id);
+      controllers[c.id] = TextEditingController(text: value == 0 ? '' : value.toStringAsFixed(0));
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final controller in controllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> saveAndClose() async {
+    final values = <String, double>{};
+    for (final c in model.selectedCategories) {
+      values[c.id] = parseMoney(controllers[c.id]?.text ?? '');
+    }
+    await model.setAllocations(values);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Category allocations saved.')));
+      Navigator.pop(context);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -875,11 +1142,7 @@ class AllocationScreen extends StatelessWidget {
                   ),
                 ),
               ...model.selectedCategories.map((c) {
-                final controller = TextEditingController(
-                  text: model.allocationFor(c.id) == 0
-                      ? ''
-                      : model.allocationFor(c.id).toStringAsFixed(0),
-                );
+                final controller = controllers.putIfAbsent(c.id, () => TextEditingController());
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Card(
@@ -908,8 +1171,7 @@ class AllocationScreen extends StatelessWidget {
                                 prefixText: '₹ ',
                                 hintText: '0',
                               ),
-                              onSubmitted: (v) =>
-                                  model.setAllocation(c.id, parseMoney(v)),
+                              onChanged: (_) => setState(() {}),
                             ),
                           ),
                         ],
@@ -920,9 +1182,9 @@ class AllocationScreen extends StatelessWidget {
               }),
               const SizedBox(height: 10),
               FilledButton.icon(
-                onPressed: () => Navigator.pop(context),
+                onPressed: saveAndClose,
                 icon: const Icon(Icons.check),
-                label: const Text('Done'),
+                label: const Text('Save Allocations'),
               ),
             ],
           );
@@ -972,7 +1234,13 @@ class CategoriesScreen extends StatelessWidget {
               (c) => Card(
                 child: SwitchListTile(
                   value: c.selected,
-                  onChanged: (v) => model.toggleCategory(c.id, v),
+                  onChanged: (v) async {
+                    if (c.id == 'other' && v) {
+                      await showAddCategoryDialog(context, model);
+                    } else {
+                      await model.toggleCategory(c.id, v);
+                    }
+                  },
                   secondary: Text(c.icon, style: const TextStyle(fontSize: 24)),
                   title: Text(
                     c.name,
@@ -1069,6 +1337,7 @@ class StatementScreen extends StatelessWidget {
                           entry: e,
                           category: model.categoryById(e.categoryId),
                           money: money,
+                          onEdit: () => showAddExpenseSheet(context, model, existing: e),
                           onDelete: () =>
                               confirmDeleteExpense(context, model, e),
                         );
@@ -1108,12 +1377,14 @@ class ExpenseTile extends StatelessWidget {
     required this.entry,
     required this.category,
     required this.money,
+    required this.onEdit,
     required this.onDelete,
   });
 
   final ExpenseEntry entry;
   final CategoryItem? category;
   final NumberFormat money;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   @override
@@ -1146,9 +1417,11 @@ class ExpenseTile extends StatelessWidget {
               ),
               PopupMenuButton<String>(
                 onSelected: (v) {
+                  if (v == 'edit') onEdit();
                   if (v == 'delete') onDelete();
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'edit', child: Text('Edit')),
                   PopupMenuItem(value: 'delete', child: Text('Delete')),
                 ],
               ),
@@ -1158,6 +1431,321 @@ class ExpenseTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class ProfileAvatar extends StatelessWidget {
+  const ProfileAvatar({super.key, required this.model, this.size = 52});
+  final AppModel model;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = model.profile.photoPath;
+    final hasPhoto = path.isNotEmpty && File(path).existsSync();
+    return CircleAvatar(
+      radius: size / 2,
+      backgroundColor: const Color(0xFF0C7C66),
+      backgroundImage: hasPhoto ? FileImage(File(path)) : null,
+      child: hasPhoto
+          ? null
+          : Text(
+              model.profile.name.isEmpty ? 'F₹' : model.profile.name.characters.first.toUpperCase(),
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: size * .35),
+            ),
+    );
+  }
+}
+
+class DiaryScreen extends StatefulWidget {
+  const DiaryScreen({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  State<DiaryScreen> createState() => _DiaryScreenState();
+}
+
+class _DiaryScreenState extends State<DiaryScreen> {
+  DateTime date = DateTime.now();
+  late TextEditingController controller;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = TextEditingController(text: widget.model.diaryFor(date)?.text ?? '');
+  }
+
+  void loadDate(DateTime value) {
+    setState(() {
+      date = value;
+      controller.text = widget.model.diaryFor(date)?.text ?? '';
+    });
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 100),
+      children: [
+        const Text('My Daily Diary', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 6),
+        const Text('Write an experience, important event or money note for the day.'),
+        const SizedBox(height: 16),
+        ListTile(
+          tileColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          leading: const Icon(Icons.calendar_month),
+          title: const Text('Diary date'),
+          subtitle: Text(DateFormat('dd MMMM yyyy').format(date)),
+          onTap: () async {
+            final picked = await showDatePicker(
+              context: context,
+              initialDate: date,
+              firstDate: DateTime(2020),
+              lastDate: DateTime(2100),
+            );
+            if (picked != null) loadDate(picked);
+          },
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: controller,
+          minLines: 10,
+          maxLines: 16,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            labelText: 'Today’s experience / incident',
+            alignLabelWithHint: true,
+            hintText: 'Write freely here…',
+          ),
+        ),
+        const SizedBox(height: 14),
+        FilledButton.icon(
+          onPressed: () async {
+            await widget.model.saveDiary(date, controller.text);
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Diary saved.')));
+          },
+          icon: const Icon(Icons.save),
+          label: const Text('Save Diary Page'),
+        ),
+      ],
+    );
+  }
+}
+
+class MoreScreen extends StatelessWidget {
+  const MoreScreen({super.key, required this.model});
+  final AppModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: model,
+      builder: (context, _) => ListView(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 100),
+        children: [
+          const Text('Profile & Data', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 14),
+          Card(
+            child: ListTile(
+              leading: ProfileAvatar(model: model, size: 52),
+              title: Text(model.profile.name.isEmpty ? 'Add your profile' : model.profile.name),
+              subtitle: Text('${model.profile.purpose}${model.profile.mobile.isEmpty ? '' : ' • ${model.profile.mobile}'}'),
+              trailing: const Icon(Icons.edit_outlined),
+              onTap: () => showProfileDialog(context, model),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.savings_outlined),
+                  title: const Text('Financial Year Details'),
+                  subtitle: const Text('April to March spending summary'),
+                  onTap: () => showFinancialYear(context, model),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.backup_outlined),
+                  title: const Text('Download / Share Backup'),
+                  subtitle: const Text('Keep a safe copy before changing phone'),
+                  onTap: () => exportBackup(context, model),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.restore),
+                  title: const Text('Restore Backup'),
+                  subtitle: const Text('Bring entries back from a FinTab backup file'),
+                  onTap: () => restoreBackup(context, model),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.share_outlined),
+              title: const Text('Share FinTab Expense'),
+              subtitle: const Text('Tell family and friends about the app'),
+              onTap: () => SharePlus.instance.share(
+                ShareParams(text: 'Try FinTab Expense — plan your monthly budget, track expenses and save more.'),
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.all(18),
+            child: Text(
+              'FinTab Expense V3 • Offline-first. Your entries remain on this phone until you delete the app data. Keep a regular backup file.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> showProfileDialog(BuildContext context, AppModel model) async {
+  final name = TextEditingController(text: model.profile.name);
+  final mobile = TextEditingController(text: model.profile.mobile);
+  String purpose = model.profile.purpose;
+  String photoPath = model.profile.photoPath;
+  await showDialog(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => AlertDialog(
+        title: const Text('My Profile'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 38,
+                backgroundImage: photoPath.isNotEmpty && File(photoPath).existsSync() ? FileImage(File(photoPath)) : null,
+                child: photoPath.isEmpty ? const Icon(Icons.person, size: 38) : null,
+              ),
+              TextButton.icon(
+                onPressed: () async {
+                  final image = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 80);
+                  if (image != null) {
+                    final directory = await getApplicationDocumentsDirectory();
+                    final saved = await File(image.path).copy('${directory.path}/fintab_profile.jpg');
+                    setLocal(() => photoPath = saved.path);
+                  }
+                },
+                icon: const Icon(Icons.photo_library_outlined),
+                label: const Text('Choose Photo'),
+              ),
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+              const SizedBox(height: 10),
+              TextField(
+                controller: mobile,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'Mobile number'),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: purpose,
+                decoration: const InputDecoration(labelText: 'App purpose'),
+                items: const ['House Head', 'Shop', 'Office', 'Student']
+                    .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                    .toList(),
+                onChanged: (v) { if (v != null) setLocal(() => purpose = v); },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () async {
+              await model.saveProfile(ProfileData(
+                name: name.text.trim(),
+                mobile: mobile.text.trim(),
+                purpose: purpose,
+                photoPath: photoPath,
+              ));
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('Save Profile'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+Future<void> exportBackup(BuildContext context, AppModel model) async {
+  try {
+    final name = 'FinTab_Backup_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.json';
+    final file = File('${Directory.systemTemp.path}/$name');
+    await file.writeAsString(const JsonEncoder.withIndent('  ').convert(model.backupJson()));
+    await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'FinTab Expense offline backup'));
+  } catch (_) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup could not be created.')));
+  }
+}
+
+Future<void> restoreBackup(BuildContext context, AppModel model) async {
+  try {
+    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json'], withData: true);
+    if (result == null) return;
+    final picked = result.files.single;
+    final text = picked.bytes != null ? utf8.decode(picked.bytes!) : await File(picked.path!).readAsString();
+    final data = Map<String, dynamic>.from(jsonDecode(text));
+    if (!context.mounted) return;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore backup?'),
+        content: const Text('Current app data will be replaced by the selected backup.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Restore')),
+        ],
+      ),
+    );
+    if (yes == true) {
+      await model.restoreBackup(data);
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup restored successfully.')));
+    }
+  } catch (_) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This is not a valid FinTab backup file.')));
+  }
+}
+
+Future<void> showFinancialYear(BuildContext context, AppModel model) async {
+  final base = model.activeMonth.month >= 4 ? model.activeMonth.year : model.activeMonth.year - 1;
+  final months = List.generate(12, (i) => DateTime(base, 4 + i));
+  double spent(DateTime month) => model.expenses
+      .where((e) => e.date.year == month.year && e.date.month == month.month)
+      .fold(0.0, (sum, e) => sum + e.amount);
+  final total = months.fold(0.0, (sum, month) => sum + spent(month));
+  await showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('FY $base-${(base + 1).toString().substring(2)} • ₹${total.toStringAsFixed(0)}'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: ListView(
+          shrinkWrap: true,
+          children: months.map((m) => ListTile(
+            dense: true,
+            title: Text(DateFormat('MMMM yyyy').format(m)),
+            trailing: Text('₹${spent(m).toStringAsFixed(0)}'),
+          )).toList(),
+        ),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+    ),
+  );
 }
 
 Future<void> showBudgetDialog(BuildContext context, AppModel model) async {
@@ -1228,6 +1816,7 @@ Future<void> showAddCategoryDialog(
 Future<void> showAddExpenseSheet(
   BuildContext context,
   AppModel model,
+  {ExpenseEntry? existing}
 ) async {
   if (model.selectedCategories.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1236,11 +1825,34 @@ Future<void> showAddExpenseSheet(
     return;
   }
 
-  final title = TextEditingController();
-  final amount = TextEditingController();
-  final note = TextEditingController();
-  String categoryId = model.selectedCategories.first.id;
-  DateTime date = DateTime.now();
+  final draft = existing == null ? model.expenseDraft : <String, dynamic>{};
+  final title = TextEditingController(text: existing?.title ?? draft['title'] ?? '');
+  final amount = TextEditingController(
+    text: existing == null
+        ? (draft['amount'] ?? '')
+        : existing.amount.toStringAsFixed(2),
+  );
+  final note = TextEditingController(text: existing?.note ?? draft['note'] ?? '');
+  String categoryId = existing?.categoryId ?? draft['categoryId'] ?? model.selectedCategories.first.id;
+  if (!model.selectedCategories.any((c) => c.id == categoryId)) {
+    categoryId = model.selectedCategories.first.id;
+  }
+  DateTime date = existing?.date ??
+      (draft['date'] == null ? DateTime.now() : DateTime.tryParse(draft['date']) ?? DateTime.now());
+
+  Future<void> persistDraft() async {
+    if (existing != null) return;
+    await model.saveDraft({
+      'title': title.text,
+      'amount': amount.text,
+      'note': note.text,
+      'categoryId': categoryId,
+      'date': date.toIso8601String(),
+    });
+  }
+  title.addListener(persistDraft);
+  amount.addListener(persistDraft);
+  note.addListener(persistDraft);
 
   await showModalBottomSheet(
     context: context,
@@ -1260,10 +1872,15 @@ Future<void> showAddExpenseSheet(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Add Expense',
+                Text(
+                  existing == null ? 'Add Expense' : 'Edit Expense',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
                 ),
+                if (existing == null && draft.isNotEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 6),
+                    child: Text('Your unfinished draft has been restored.', style: TextStyle(color: Color(0xFF0C7C66))),
+                  ),
                 const SizedBox(height: 16),
                 TextField(
                   controller: title,
@@ -1296,7 +1913,10 @@ Future<void> showAddExpenseSheet(
                       )
                       .toList(),
                   onChanged: (v) {
-                    if (v != null) setLocal(() => categoryId = v);
+                    if (v != null) {
+                      setLocal(() => categoryId = v);
+                      persistDraft();
+                    }
                   },
                 ),
                 const SizedBox(height: 12),
@@ -1315,7 +1935,10 @@ Future<void> showAddExpenseSheet(
                       firstDate: DateTime(2020),
                       lastDate: DateTime(2100),
                     );
-                    if (picked != null) setLocal(() => date = picked);
+                    if (picked != null) {
+                      setLocal(() => date = picked);
+                      persistDraft();
+                    }
                   },
                 ),
                 const SizedBox(height: 12),
@@ -1340,17 +1963,29 @@ Future<void> showAddExpenseSheet(
                         );
                         return;
                       }
-                      await model.addExpense(
-                        title: title.text,
-                        amount: value,
-                        categoryId: categoryId,
-                        date: date,
-                        note: note.text,
-                      );
+                      if (existing == null) {
+                        await model.addExpense(
+                          title: title.text,
+                          amount: value,
+                          categoryId: categoryId,
+                          date: date,
+                          note: note.text,
+                        );
+                        await model.clearDraft();
+                      } else {
+                        await model.updateExpense(ExpenseEntry(
+                          id: existing.id,
+                          title: title.text.trim(),
+                          amount: value,
+                          categoryId: categoryId,
+                          date: date,
+                          note: note.text.trim(),
+                        ));
+                      }
                       if (ctx.mounted) Navigator.pop(ctx);
                     },
                     icon: const Icon(Icons.save),
-                    label: const Text('Save Expense'),
+                    label: Text(existing == null ? 'Save Expense' : 'Save Changes'),
                   ),
                 ),
               ],
