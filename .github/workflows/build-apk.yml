@@ -26,7 +26,7 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-        - name: Create Android files
+      - name: Create Android files
         run: flutter create --platforms=android .
 
       - name: Build APK
@@ -35,5 +35,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: fintab-expense-apk
+          name: FinTab-Expense-APK
           path: build/app/outputs/flutter-apk/app-release.apk
