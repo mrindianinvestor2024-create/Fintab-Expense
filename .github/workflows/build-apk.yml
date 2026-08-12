@@ -1,4 +1,4 @@
-name: Build FinTab Expense V3.1 Fixed APK and AAB
+name: Build FinTab Expense V3.4 Scan and Pay APK and AAB
 
 on:
   workflow_dispatch:
@@ -9,6 +9,9 @@ on:
       - "lib/**"
       - "pubspec.yaml"
       - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -49,6 +52,16 @@ jobs:
           fi
           sed -i 's/android:label="fintab_expense"/android:label="FinTab Expense"/g' android/app/src/main/AndroidManifest.xml
 
+          sed -i '/<application/i\
+              <uses-permission android:name="android.permission.CAMERA" />\
+              <queries>\
+                  <package android:name="com.google.android.apps.nbu.paisa.user" />\
+                  <intent>\
+                      <action android:name="android.intent.action.VIEW" />\
+                      <data android:scheme="upi" />\
+                  </intent>\
+              </queries>' android/app/src/main/AndroidManifest.xml
+
           MAIN_ACTIVITY=$(find android/app/src/main -type f \( -name "MainActivity.kt" -o -name "MainActivity.java" \) | head -n 1)
           if [ -z "$MAIN_ACTIVITY" ]; then
             echo "MainActivity source file not found"
@@ -83,21 +96,35 @@ jobs:
         run: flutter pub get
 
       - name: Build release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --dart-define=APP_SHARE_URL=${{ github.server_url }}/${{ github.repository }}/releases/latest/download/FinTab-Expense.apk
 
       - name: Build release App Bundle
-        run: flutter build appbundle --release
+        run: flutter build appbundle --release --dart-define=APP_SHARE_URL=${{ github.server_url }}/${{ github.repository }}/releases/latest/download/FinTab-Expense.apk
+
+      - name: Prepare public APK download
+        run: |
+          mkdir -p release
+          cp build/app/outputs/flutter-apk/app-release.apk release/FinTab-Expense.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-V3.1-Fixed-APK
+          name: FinTab-Expense-V3.4-Scan-and-Pay-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-V3.1-Fixed-AAB
+          name: FinTab-Expense-V3.4-Scan-and-Pay-AAB
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
+
+      - name: Publish APK download link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fintab-v3.4-${{ github.run_number }}
+          name: FinTab Expense V3.4
+          body: Latest installable FinTab Expense Android APK.
+          make_latest: true
+          files: release/FinTab-Expense.apk
