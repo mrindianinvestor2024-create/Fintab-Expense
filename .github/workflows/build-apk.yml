@@ -1,11 +1,14 @@
-name: Build FinTab Expense APK
+name: Build FinTab Expense V3 APK and AAB
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-      - master
+    paths:
+      - "lib/**"
+      - "pubspec.yaml"
+      - ".github/workflows/build-apk.yml"
 
 jobs:
   build:
@@ -15,25 +18,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       - name: Flutter version
         run: flutter --version
 
+      - name: Create Android platform
+        run: flutter create --platforms=android --org com.thefintab --project-name fintab_expense .
+
+      - name: Set production package ID and app name
+        shell: bash
+        run: |
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/com\.thefintab\.fintab_expense/com.thefintab.expense/g' android/app/build.gradle.kts
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
+          fi
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/com\.thefintab\.fintab_expense/com.thefintab.expense/g' android/app/build.gradle
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
+          fi
+          sed -i 's/android:label="fintab_expense"/android:label="FinTab Expense"/g' android/app/src/main/AndroidManifest.xml
+
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Create Android files
-        run: flutter create --platforms=android .
-
-      - name: Build APK
+      - name: Build release APK
         run: flutter build apk --release
+
+      - name: Build release App Bundle
+        run: flutter build appbundle --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-APK
+          name: FinTab-Expense-V3-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: FinTab-Expense-V3-AAB
+          path: build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
