@@ -1,17 +1,10 @@
-name: Build FinTab Expense V3.4 Scan and Pay APK and AAB
+
+name: Build FinTab Expense APK
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-    paths:
-      - "lib/**"
-      - "pubspec.yaml"
-      - ".github/workflows/build-apk.yml"
-
-permissions:
-  contents: write
+    branches: [ "main" ]
 
 jobs:
   build:
@@ -36,95 +29,17 @@ jobs:
       - name: Flutter version
         run: flutter --version
 
-      - name: Create Android platform
-        run: flutter create --platforms=android --org com.thefintab --project-name fintab_expense .
-
-      - name: Set production package ID and app name
-        shell: bash
-        run: |
-          if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's/com\.thefintab\.fintab_expense/com.thefintab.expense/g' android/app/build.gradle.kts
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
-          fi
-          if [ -f android/app/build.gradle ]; then
-            sed -i 's/com\.thefintab\.fintab_expense/com.thefintab.expense/g' android/app/build.gradle
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
-          fi
-          sed -i 's/android:label="fintab_expense"/android:label="FinTab Expense"/g' android/app/src/main/AndroidManifest.xml
-
-          sed -i '/<application/i\
-              <uses-permission android:name="android.permission.CAMERA" />\
-              <queries>\
-                  <package android:name="com.google.android.apps.nbu.paisa.user" />\
-                  <intent>\
-                      <action android:name="android.intent.action.VIEW" />\
-                      <data android:scheme="upi" />\
-                  </intent>\
-              </queries>' android/app/src/main/AndroidManifest.xml
-
-          MAIN_ACTIVITY=$(find android/app/src/main -type f \( -name "MainActivity.kt" -o -name "MainActivity.java" \) | head -n 1)
-          if [ -z "$MAIN_ACTIVITY" ]; then
-            echo "MainActivity source file not found"
-            exit 1
-          fi
-          sed -i 's/package com\.thefintab\.fintab_expense/package com.thefintab.expense/g' "$MAIN_ACTIVITY"
-          grep -q 'package com.thefintab.expense' "$MAIN_ACTIVITY"
-
-      - name: Restore stable test signing key
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: fintab-expense-test-signing-v1
-
-      - name: Create stable test signing key when missing
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -v \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=FinTab Expense Test,O=The FinTab,C=IN"
-          fi
-
-      - name: Get dependencies
+      - name: Get packages
         run: flutter pub get
 
-      - name: Build release APK
-        run: flutter build apk --release --dart-define=APP_SHARE_URL=${{ github.server_url }}/${{ github.repository }}/releases/latest/download/FinTab-Expense.apk
+      - name: Analyze
+        run: flutter analyze
 
-      - name: Build release App Bundle
-        run: flutter build appbundle --release --dart-define=APP_SHARE_URL=${{ github.server_url }}/${{ github.repository }}/releases/latest/download/FinTab-Expense.apk
-
-      - name: Prepare public APK download
-        run: |
-          mkdir -p release
-          cp build/app/outputs/flutter-apk/app-release.apk release/FinTab-Expense.apk
+      - name: Build APK
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-V3.4-Scan-and-Pay-APK
+          name: FinTab-Expense-V4-APK
           path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: FinTab-Expense-V3.4-Scan-and-Pay-AAB
-          path: build/app/outputs/bundle/release/app-release.aab
-          if-no-files-found: error
-
-      - name: Publish APK download link
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: fintab-v3.4-${{ github.run_number }}
-          name: FinTab Expense V3.4
-          body: Latest installable FinTab Expense Android APK.
-          make_latest: true
-          files: release/FinTab-Expense.apk
