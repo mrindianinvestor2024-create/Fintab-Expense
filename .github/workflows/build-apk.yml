@@ -29,6 +29,9 @@ jobs:
       - name: Flutter version
         run: flutter --version
 
+        - name: Create Android project
+        run: flutter create . --platforms=android --project-name fintab_expense
+
       - name: Get packages
         run: flutter pub get
 
