@@ -1,28 +1,21 @@
+
 name: fintab_expense
-description: FinTab Expense - offline category-wise budget and expense manager.
+description: FinTab Expense - Personal budget, expense, UPI pay, savings and goals app.
 publish_to: "none"
 
-version: 3.4.0+7
+version: 4.0.0+40
 
 environment:
-  sdk: ">=3.9.0 <4.0.0"
+  sdk: ">=3.7.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  cross_file: ^0.3.5+2
-  shared_preferences: ^2.5.5
-  intl: ^0.20.3
-  pdf: ^3.13.0
-  printing: ^5.15.0
-  file_picker: ^10.3.10
-  image_picker: ^1.2.1
-  in_app_purchase: ^3.3.0
-  mobile_scanner: ^7.4.0
-  path_provider: ^2.1.5
-  share_plus: ^12.0.1
+  intl: ^0.20.2
+  shared_preferences: ^2.5.3
   url_launcher: ^6.3.2
+  mobile_scanner: ^7.4.0
 
 dev_dependencies:
   flutter_test:
