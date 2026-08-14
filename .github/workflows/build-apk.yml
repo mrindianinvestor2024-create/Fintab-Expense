@@ -35,8 +35,8 @@ jobs:
       - name: Get packages
         run: flutter pub get
 
-      - name: Analyze
-  run: flutter analyze lib --no-fatal-infos
+      - name: Analyze app
+        run: flutter analyze lib --no-fatal-infos
 
       - name: Build APK
         run: flutter build apk --release
@@ -44,5 +44,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FinTab-Expense-V4-APK
+          name: FinTab-Expense-APK
           path: build/app/outputs/flutter-apk/app-release.apk
